@@ -207,6 +207,23 @@ def test_r03_sentence_final_citation_counts_as_cited():
     assert stats["citation_coverage"] == 1.0
 
 
+def test_r03_empty_report_coverage_is_undefined_not_perfect():
+    """2026-11 修复：无事实句时覆盖率不可定义（None），不得 fail-open 成 100%。
+
+    旧行为 ``1.0 if total else 1.0`` 会让空报告/纯表格报告在统计上显示"全覆盖"，
+    与「失败不伪装成成功」的评测纪律冲突。
+    """
+    stats = Validator._fact_coverage_stats("")
+    assert stats["fact_sentence_count"] == 0
+    assert stats["citation_coverage"] is None
+    assert stats["uncited_fact_sentence_count"] == 0
+
+    # 全部句子都短于最小事实句长度 ⇒ 同样不可定义
+    tiny = Validator._fact_coverage_stats("好。可以。")
+    assert tiny["fact_sentence_count"] == 0
+    assert tiny["citation_coverage"] is None
+
+
 def test_r03_uncited_fact_downgraded_in_repair():
     report = "该公司在二零二五年度的营业收入已经达到九百亿元。"
     snapshots = []

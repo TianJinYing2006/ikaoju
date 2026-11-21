@@ -86,6 +86,9 @@ def test_write_node_keeps_raw_layer():
                 content="[摘要]", source="rag:doc.md", source_type="rag", sq_id="q1",
                 metadata={"origin_evidence_ids": [f.evidence_id for f in findings]})]
 
+        def drain_degradations(self):
+            return []
+
     class _Writer:
         def __init__(self):
             self.seen = None

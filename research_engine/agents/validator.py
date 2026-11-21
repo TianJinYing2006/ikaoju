@@ -717,7 +717,10 @@ class Validator:
         return {
             "fact_sentence_count": total,
             "uncited_fact_sentence_count": total - cited,
-            "citation_coverage": round(cited / total, 4) if total else 1.0,
+            # 2026-11 修复（fail-open）：没有任何达到最小长度的"事实句"时，覆盖率**不可定义**，
+            # 如实返回 None，而不是 1.0。旧行为会让空报告/纯表格报告在统计上显示 100% 覆盖，
+            # 与「失败不伪装成成功」的评测纪律冲突（消费方 metrics.py 已按非数值处理为 None）。
+            "citation_coverage": round(cited / total, 4) if total else None,
             "uncited_fact_spans": uncited_spans,
         }
 
