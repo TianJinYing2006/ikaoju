@@ -110,3 +110,8 @@ taste-skill/
 
 # 容量压测原始产物（tools/loadtest/README.md：不入库）
 reports/
+
+# 覆盖率产物（pytest-cov）
+.coverage
+.coverage.*
+htmlcov/
