@@ -66,7 +66,8 @@ KNOWN_PROVIDERS: tuple[str, ...] = ("bocha", "tavily")
 def create_search_provider(name: str = "bocha") -> SearchProvider:
     """按名称创建搜索 Provider（``config.search.provider`` 的唯一装配入口）。
 
-    支持 ``bocha``（博查，默认）与 ``tavily``（1000 次/月免费，专为 Agent 设计）。
+    支持 ``bocha``（博查，默认）与 ``tavily``（1000 次/月免费，专为 Agent 设计）；
+    评测复算另支持 ``replay``（回放录制 fixture，确定性、零网络，不列入用户可选清单）。
     未知名称**直接抛错而非静默回退到默认源** —— 配错了搜索源却不吭声，比启动失败
     危险得多（会用错的源跑完整场研究，产物看起来正常）。
     """
@@ -76,5 +77,11 @@ def create_search_provider(name: str = "bocha") -> SearchProvider:
     if name == "tavily":
         from research_engine.search.tavily import TavilySearchProvider
         return TavilySearchProvider()
+    if name == "replay":
+        # 2026-11 评测确定性：仅评测/复算使用；**不列入 KNOWN_PROVIDERS**
+        # （那是 `/api/options` 给用户的下拉选项，replay 不是可选产品能力）。
+        from research_engine.search.replay import ReplaySearchProvider, replay_dir_from_config
+
+        return ReplaySearchProvider(replay_dir_from_config())
     raise ValueError(
         f"未知搜索 Provider: {name}（可用：{' / '.join(KNOWN_PROVIDERS)}）")

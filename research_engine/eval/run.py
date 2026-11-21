@@ -552,6 +552,25 @@ def _apply_judge_overrides(args: argparse.Namespace) -> None:
         _config.eval.judge_family = judge_family
 
 
+def _apply_replay_overrides(args: argparse.Namespace) -> None:
+    """``--replay-dir``：把 Phase 1 的检索切成确定性回放（2026-11）。
+
+    - 搜索 provider → ``replay``，fixture 目录取参数；
+    - 同时关闭 arXiv（外部网络，不可回放）——否则「确定性」只剩一半；
+    - 记录进 provenance（config_snapshot 会带 `search.provider`/`replay_dir`）。
+    """
+    replay_dir = getattr(args, "replay_dir", None)
+    if not replay_dir:
+        return
+    path = Path(replay_dir)
+    if not path.exists():
+        # fail-fast 前**不得改动 config**：否则 SystemExit 路径会把「部分覆盖」漏给同进程后续调用。
+        raise SystemExit(f"--replay-dir 不存在：{path}")
+    _config.search.provider = "replay"
+    _config.search.replay_dir = str(path)
+    _config.search.enable_arxiv = False
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="W5 eval 两阶段管线")
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
@@ -573,6 +592,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="裁判模型族声明（如 qwen / deepseek / gpt）；用于 provenance 独立性判定，不做推断。",
     )
     parser.add_argument(
+        "--replay-dir",
+        type=Path,
+        default=None,
+        help="确定性回放：用该目录的 search_replay.json 替换网络检索（并关闭 arXiv）。",
+    )
+    parser.add_argument(
         "--thresholds-json",
         default=None,
         help="Arm 5 §5.5.1 质量闸阈值（JSON 对象，覆盖默认组）；"
@@ -580,6 +605,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
     _apply_judge_overrides(args)
+    _apply_replay_overrides(args)
 
     if not args.dataset.exists():
         raise SystemExit(f"dataset 不存在：{args.dataset}（先用 --dataset 指定或构建 dataset.jsonl）")

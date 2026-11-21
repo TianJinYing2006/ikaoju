@@ -91,6 +91,10 @@ class SearchConfig:
     enable_arxiv: bool = field(
         default_factory=lambda: _env("ENABLE_ARXIV", "true").lower() != "false")
     max_results: int = 8
+    #: 评测确定性（2026-11）：replay provider 的 fixture 目录。
+    #: 设 ``SEARCH_PROVIDER=replay`` + 本项（或 eval CLI ``--replay-dir``）时，
+    #: 网络检索完全按录制的 JSON 回放，同一 fixture 下结果确定、可复算。
+    replay_dir: str = field(default_factory=lambda: _env("DR_REPLAY_DIR"))
     # W4 Q3：Semantic Scholar 后处理管道（可选，缺 key 静默跳过；citationCount 只采不决策）
     semantic_scholar_api_key: str = field(default_factory=lambda: _env("SEMANTIC_SCHOLAR_API_KEY"))
 

@@ -131,7 +131,7 @@ docs/                # 需求 45 篇、ADR 19 篇、评测结论、运维 runboo
 
 | 指标 | 当前值 | 采集口径 / 日期 |
 | --- | --- | --- |
-| 单元测试 | **1531 项**（2026-11-22 本机 Python 3.13 + 锁定依赖：1451 通过 / 81 跳过 / 0 失败） | `pytest --collect-only`；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 |
+| 单元测试 | **1544 项**（2026-11-22 本机 Python 3.13 + 锁定依赖：1464 通过 / 81 跳过 / 0 失败） | `pytest --collect-only`；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 |
 | 浏览器 E2E | **89 个用例 / 21 个 spec** | `npx playwright test --list`；desktop + mobile 双 project，`DR_DEMO=1` |
 
 - **CI**：ruff + Python 3.11/3.12/3.13 矩阵（3.13 档带 **coverage 门禁 ≥73%**）+
@@ -159,6 +159,7 @@ docs/                # 需求 45 篇、ADR 19 篇、评测结论、运维 runboo
 | --- | --- |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | 工程约束、PR 纪律、L3 边界、AI 协作规则 |
 | [`docs/figures.md`](docs/figures.md) | 对外数字唯一来源（含采集命令与日期） |
+| [`docs/status/current.md`](docs/status/current.md) | 当前状态单页（能做什么 / 进行中 / 不宣称什么） |
 | [`docs/plan/2026-11-execution.md`](docs/plan/2026-11-execution.md) | 2026-11 重构批次：已完成 / 未完成 / 原因 |
 | [`docs/decisions/`](docs/decisions/) | ADR（决策背景、取舍、影响） |
 | [`docs/requirements/`](docs/requirements/) | 需求与验收记录（按批次） |
