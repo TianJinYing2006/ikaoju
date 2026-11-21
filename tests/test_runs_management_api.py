@@ -147,6 +147,43 @@ def test_retry_clones_request_with_lineage_and_idempotency(
     assert again.status_code == 200 and again.json()["run_id"] == new_id
 
 
+def test_retry_reuses_input_safety_gate(client: TestClient, store: FakeStore,
+                                        monkeypatch):
+    """2026-11 修复：重试不得绕过审核/注入闸（此前直进 _start_queued）。"""
+    assert _register(client, "retry@example.com").status_code == 200
+    uid = _user_id(client)
+    failed = _seed(store, user_id=uid, status="FAILED", topic="失败任务")
+
+    class _Blocked:
+        matches = ["badword"]
+        provider = "local_rules"
+        decision_id = "dec-1"
+        degraded = False
+        decision = "block"
+
+    monkeypatch.setattr(api, "evaluate_input", lambda _text: _Blocked())
+    resp = client.post(f"/api/runs/{failed['run_id']}/retry", headers=_csrf(client))
+    assert resp.status_code == 400  # content_blocked 的 HTTP 映射（errors.py）
+    assert resp.json()["detail"]["code"] == "content_blocked"
+    # 被拦的重试不得产生任何新 run（原 failed run 仍在，但无 retry_of 子任务）
+    assert not any((r.get("retry_of") == failed["run_id"]) for r in store.list_runs(limit=50))
+
+
+def test_audit_failure_is_logged_not_silently_dropped(client: TestClient, store: FakeStore,
+                                                      monkeypatch, caplog):
+    """2026-11 修复：审计旁路失败必须留下服务端 ERROR 日志（append-only 审计不得无声丢失）。"""
+    import logging
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("audit db down")
+
+    monkeypatch.setattr(store, "record_audit", _boom)
+    with caplog.at_level(logging.ERROR, logger=api.logger.name):
+        api._audit("run_retried", detail={"x": 1})
+    assert "安全审计写入失败" in caplog.text
+    assert "run_retried" in caplog.text
+
+
 def test_cross_user_actions_are_404(client: TestClient, store: FakeStore):
     assert _register(client, "owner@example.com").status_code == 200
     owner_id = _user_id(client)

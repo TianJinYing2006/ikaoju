@@ -26,6 +26,16 @@ from webauthn.helpers.structs import (
 CHALLENGE_TTL_SECONDS = 300
 TIMEOUT_MS = 120_000
 
+# 2026-11 修复（fail-closed）：此前的 ``enabled()`` 只判 ``RP_ID and ORIGINS``，而两者都有
+# localhost 默认值 ⇒ **恒为真**，与注释「未配置时端点 503」相反。生产漏配时
+# ``/api/options`` 会谎报可用、挑战能发但签名校验必失败（静默坏功能）。
+# 现在：
+#   - 两个变量都显式配置 ⇒ 启用；
+#   - staging / production 未显式配置 ⇒ **禁用**（端点 503，fail-closed）；
+#   - local 开发保留 localhost 默认方便本地联调（显式配置仍是推荐做法）。
+_ENV = (os.getenv("DR_ENV") or "local").strip().lower()
+_RP_ID_CONFIGURED = bool((os.getenv("DR_WEBAUTHN_RP_ID") or "").strip())
+_ORIGINS_CONFIGURED = bool((os.getenv("DR_WEBAUTHN_ORIGIN") or "").strip())
 RP_ID = (os.getenv("DR_WEBAUTHN_RP_ID") or "localhost").strip()
 RP_NAME = (os.getenv("DR_WEBAUTHN_RP_NAME") or "爱考据 iKaoju").strip()
 ORIGINS = tuple(
@@ -39,8 +49,12 @@ ORIGINS = tuple(
 
 
 def enabled() -> bool:
-    """RP ID / 允许来源均有效才启用；未配置时端点 503（fail-closed，不静默降级）。"""
-    return bool(RP_ID and ORIGINS)
+    """是否启用 Passkey：显式配置优先；staging/production 未配置即 fail-closed。"""
+    if _RP_ID_CONFIGURED and _ORIGINS_CONFIGURED:
+        return bool(RP_ID and ORIGINS)
+    if _ENV in ("staging", "production"):
+        return False
+    return bool(RP_ID and ORIGINS)  # local 开发默认（localhost）
 
 
 def rp_id() -> str:

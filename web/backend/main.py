@@ -1140,7 +1140,10 @@ def _audit(action: str, *, request: Optional[Request] = None,
             action, actor_user_id=actor_user_id, target_type=target_type,
             target_id=target_id, detail=detail, **meta)
     except Exception:  # noqa: BLE001 —— 审计是旁路，不得影响主流程
-        pass
+        # 2026-11 修复：旁路 ≠ 静默丢弃。审计写失败必须留下可检索的服务端日志
+        # （不含 detail 原文，避免把敏感载荷抄进日志），否则「append-only 审计」在库故障时无声丢失。
+        logger.exception("安全审计写入失败 action=%s target_type=%s target_id=%s",
+                         action, target_type, target_id)
 
 
 def _day_start_utc() -> datetime:
@@ -2147,30 +2150,14 @@ def auth_delete_account(req: DeleteAccountRequest, request: Request, response: R
     return {"ok": True, "deletion_request_id": request_id, "rag_cleanup": "pending"}
 
 
-def start_research(*, topic: str, instructions: str = "", profile_name: str,
-                   user_id: Optional[str], idempotency_key: Optional[str] = None,
-                   ignored: Optional[dict] = None,
-                   request: Optional[Request] = None) -> str:
-    """研究任务创建**服务函数**（需求 37 M2 / TBD-6）：准入 / 配额 / 审核 / 注入 / 幂等 单一口径。
+def _check_input_safety(*, topic: str, instructions: str, user_id: Optional[str],
+                        request: Optional[Request] = None) -> None:
+    """输入侧安全检查（唯一实现）：空主题 / 内容审核 / 注入模式预检。
 
-    **唯一创建链路**：HTTP `POST /api/research` 与 MCP `deep_research` 工具都经本函数；
-    MCP 不得自建第二条创建链路（配额/审核/幂等一处不落）。
-    `request` 仅用于审计元数据（MCP 路径为 None）；失败一律抛 `ApiError`
-    （HTTP 层 `to_http()` 转换；MCP 层转工具错误）。
+    2026-11：从 ``start_research`` 抽出。此前 ``retry_run`` 复制原请求后直接调
+    ``_start_queued``/``manager.start``，绕过了本闸 —— 与其「唯一创建链路」注释矛盾。
+    重试与原提交必须同一口径（审核降级时同样 fail-closed）。
     """
-    profile = resolve_profile(profile_name)
-    if profile is None:
-        raise ApiError(
-            "invalid_request",
-            f"未知运行档位：{profile_name}",
-            detail=f"known={sorted(PROFILES)}",
-        )
-    fingerprint = _request_fingerprint(topic, instructions, profile.name)
-    # 幂等命中先于配额闸：重复提交是同一个逻辑请求，不应被日限额/预算拒绝。
-    existing = _idempotent_existing(user_id, idempotency_key, fingerprint)
-    if existing is not None:
-        return existing["run_id"]
-    _enforce_quotas(user_id)
     if not topic.strip():
         raise ApiError("empty_topic", "topic 不能为空")
     # P7-A / P2-5a / P0-3：输入侧预检（provider 化；命中即拒绝并留审核记录，
@@ -2216,6 +2203,35 @@ def start_research(*, topic: str, instructions: str = "", profile_name: str,
             "content_blocked", "输入包含疑似指令注入内容",
             detail=f"patterns={injection_hits}",
         )
+
+
+def start_research(*, topic: str, instructions: str = "", profile_name: str,
+                   user_id: Optional[str], idempotency_key: Optional[str] = None,
+                   ignored: Optional[dict] = None,
+                   request: Optional[Request] = None) -> str:
+    """研究任务创建**服务函数**（需求 37 M2 / TBD-6）：准入 / 配额 / 审核 / 注入 / 幂等 单一口径。
+
+    **唯一创建链路**：HTTP `POST /api/research` 与 MCP `deep_research` 工具都经本函数；
+    MCP 不得自建第二条创建链路（配额/审核/幂等一处不落）。
+    `request` 仅用于审计元数据（MCP 路径为 None）；失败一律抛 `ApiError`
+    （HTTP 层 `to_http()` 转换；MCP 层转工具错误）。
+    """
+    profile = resolve_profile(profile_name)
+    if profile is None:
+        raise ApiError(
+            "invalid_request",
+            f"未知运行档位：{profile_name}",
+            detail=f"known={sorted(PROFILES)}",
+        )
+    fingerprint = _request_fingerprint(topic, instructions, profile.name)
+    # 幂等命中先于配额闸：重复提交是同一个逻辑请求，不应被日限额/预算拒绝。
+    existing = _idempotent_existing(user_id, idempotency_key, fingerprint)
+    if existing is not None:
+        return existing["run_id"]
+    _enforce_quotas(user_id)
+    # 2026-11：空主题 / 审核 / 注入检查收敛到 _check_input_safety（retry 路径复用同一实现）
+    _check_input_safety(topic=topic, instructions=instructions,
+                        user_id=user_id, request=request)
     # 搜索引擎由服务端配置固定（需求 10 §3.1 第 13 项）；客户端字段在 HTTP 层忽略。
     if EXECUTION_MODE == "queue":
         return _start_queued(
@@ -2398,6 +2414,10 @@ def retry_run(run_id: str, request: Request) -> StartResponse:
     ignored = payload.get("ignored_overrides") or {}
     fingerprint = _request_fingerprint(topic, instructions, profile.name)
     try:
+        # 2026-11 修复：重试也必须过输入安全闸（此前直接进 _start_queued，绕过审核/注入预检）；
+        # 已拦截过的输入重试时同样被拦，审核 provider 降级时同样 fail-closed。
+        _check_input_safety(topic=topic, instructions=instructions,
+                            user_id=owner, request=request)
         if EXECUTION_MODE == "queue":
             new_run_id = _start_queued(
                 topic=topic, instructions=instructions, idempotency_key=idempotency_key,

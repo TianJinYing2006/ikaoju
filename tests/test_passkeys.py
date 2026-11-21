@@ -221,3 +221,32 @@ def test_passkey_manage_rate_limited(monkeypatch, client: TestClient, store: Fak
     assert response.status_code == 429
     assert response.json()["detail"]["code"] == "rate_limited"
     assert "passkey_manage_rate_limited" in _actions(store)
+
+
+# ---------------------------------------------------------------- 2026-11 fail-closed
+
+def test_passkey_fail_closed_in_staging_without_explicit_config(monkeypatch):
+    """staging/production 未显式配置 DR_WEBAUTHN_* 时必须禁用（旧实现恒真）。"""
+    monkeypatch.setattr(passkeys, "_ENV", "staging")
+    monkeypatch.setattr(passkeys, "_RP_ID_CONFIGURED", False)
+    monkeypatch.setattr(passkeys, "_ORIGINS_CONFIGURED", False)
+    assert passkeys.enabled() is False
+
+
+def test_passkey_local_defaults_allowed_for_dev(monkeypatch):
+    """local 开发保留 localhost 默认（但 staging/prod 不享受该默认）。"""
+    monkeypatch.setattr(passkeys, "_ENV", "local")
+    monkeypatch.setattr(passkeys, "_RP_ID_CONFIGURED", False)
+    monkeypatch.setattr(passkeys, "_ORIGINS_CONFIGURED", False)
+    assert passkeys.enabled() is True
+
+
+def test_passkey_enabled_requires_both_explicit_vars(monkeypatch):
+    """两个变量都显式配置才算启用；只配一个在 staging 仍 fail-closed。"""
+    monkeypatch.setattr(passkeys, "_ENV", "staging")
+    monkeypatch.setattr(passkeys, "_RP_ID_CONFIGURED", True)
+    monkeypatch.setattr(passkeys, "_ORIGINS_CONFIGURED", False)
+    assert passkeys.enabled() is False
+    monkeypatch.setattr(passkeys, "_ORIGINS_CONFIGURED", True)
+    assert passkeys.enabled() is True
+
