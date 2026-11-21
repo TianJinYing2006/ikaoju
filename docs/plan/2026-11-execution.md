@@ -112,7 +112,7 @@ git checkout dev -- icon-lab ppt-report
 |---|--------|------|------|------|
 | 1 | 阶段 0 止血：eval 并发共享 graph / HITL 计账 / 压缩静默 / coverage fail-open，各带回归 | ✅ 完成 | `test_eval_per_run_isolation`(3) / `test_hitl_token_accounting`(4) / `test_context_compression`(+2) / `test_audit_p1_remediation`(+1) | — |
 | 2 | 阶段 1：figures 自动生成 + CI 守卫；评测确定性/独立裁判脚手架；陈旧数字清理 | ✅ 完成 | `tools/gen_figures.py --check` exit 0（CI step）；`search/replay.py` + `test_search_replay`(14)；`JudgeWithLedger` + `test_eval_judge_scaffold`(9)；README/figures 数字由生成物校验 | — |
-| 3 | 阶段 2：RunContext / per-run 隔离 / 节点纯函数化切片 / 消除类级计数器与 contextvar 隐式依赖 | ⚠️ 大部分 | ADR-0019/0020；`runtime/`（RunContext + TokenLedger + 注册表）；类级计数器已删除；RAG 作用域与运行档位显式注入；**usage sink 显式注册表已就位**（LLM emit 带 run_id，runner/worker 注册）；全量测试绿 | **搜索/RAG 的 emit 点仍未携 run_id**（当前回退 contextvar 兜底，需把 run_id 穿透检索调用链）；**节点仍是方法**（依赖注入已集中，未拆纯函数模块） |
+| 3 | 阶段 2：RunContext / per-run 隔离 / 节点纯函数化切片 / 消除类级计数器与 contextvar 隐式依赖 | ⚠️ 大部分 | ADR-0019/0020；`runtime/`（RunContext + TokenLedger + 注册表）；类级计数器已删除；RAG 作用域与运行档位显式注入；**usage sink 显式注册表已就位**（LLM emit 带 run_id，runner/worker 注册）；全量测试绿 | 研究主链路（LLM + web/RAG/arXiv/MCP 检索）usage 已走显式注册表；**文档摄取 / MCP server 的 sink 仍走兼容 contextvar**（非研究 run 执行单元）；**节点仍是方法**（依赖注入已集中，未拆纯函数模块） |
 | 4 | 阶段 4：CI 质量门禁与仓库卫生（非产品目录移出、文档结构收敛） | ⚠️ 大部分 | coverage ≥73%（实测 75.01%）、mypy 增量（6 files Success）、`security-windows` job；icon-lab/ppt-report 移出跟踪；`docs/status/current.md` 单页 + project-status 归档 | **pip-audit CI 门禁**：工具可用并完成巡检（soupsieve 已修），但 `-r requirements-lock.txt` 需稳定 PyPI 解析，本机网络未取得稳定验证；npm devDeps 审计未做 |
 | 5 | 阶段 5：README 重写与完成情况报告 | ✅ 完成 | README 531→约 190 行（诚实评测口径/边界）；本报告 + ADR-0019/0020 + CHANGELOG | — |
 
