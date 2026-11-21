@@ -57,6 +57,8 @@ from .agui import (
     sse_frame,
 )
 from .alerts import alert_webhook_url, collect_alerts
+from .api.meta import LEGAL_DIR, legal_version
+from .api.meta import router as meta_router
 from .appeals import submit_appeal
 from .auth import (
     CSRF_COOKIE as CSRF_COOKIE_BASE,
@@ -447,15 +449,8 @@ ALERT_MONTHLY_PCT = _env_number("DR_ALERT_MONTHLY_PCT", 80.0)
 # P1-3：readiness / 告警的 worker 心跳新鲜度窗口
 WORKER_HEARTBEAT_MAX_AGE_SECONDS = int(_env_number("DR_WORKER_HEARTBEAT_MAX_AGE_SECONDS", 90))
 
-# P7-A：合规文本（隐私政策 / 用户协议）以仓库文档为唯一来源
-LEGAL_DIR = Path(__file__).resolve().parents[2] / "docs" / "legal"
-# 需求 25：帮助中心 FAQ（仓库文档为唯一来源）
-HELP_DIR = Path(__file__).resolve().parents[2] / "docs" / "help"
-
-
-def _legal_version(path: Path) -> str:
-    """需求 25：法律文档版本号 = 内容 sha256[:12]（注册同意留档用）。"""
-    return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+# P7-A：合规文本 / 帮助中心已拆到 web/backend/api/meta.py（2026-11 后端拆分第一刀）；
+# LEGAL_DIR / legal_version 仍在此 re-export，供注册同意留档与 options 使用。
 
 
 # P3：执行模式。`inprocess` = 请求进程内线程执行（P1/P2 行为，默认，本地开发）；
@@ -1378,8 +1373,8 @@ def auth_register(req: RegisterRequest, request: Request, response: Response) ->
     _set_session_cookies(response, user["user_id"], request)
     # 需求 25：注册同意留档（PIPL 可举证；版本 = 文档内容 hash）
     consent_versions = {
-        "terms": _legal_version(LEGAL_DIR / "terms-of-service.md"),
-        "privacy": _legal_version(LEGAL_DIR / "privacy-policy.md"),
+        "terms": legal_version(LEGAL_DIR / "terms-of-service.md"),
+        "privacy": legal_version(LEGAL_DIR / "privacy-policy.md"),
     }
     _store_call(store.save_user_consents, user["user_id"],
                 [{"doc_type": doc_type, "version": version}
@@ -2646,26 +2641,9 @@ def submit_feedback(req: FeedbackRequest, request: Request) -> dict:
     return {"ok": True, "feedback_id": feedback_id}
 
 
-@app.get("/api/help/faq")
-def help_faq() -> dict:
-    """帮助中心 FAQ（需求 25）：以仓库 `docs/help/faq.md` 为唯一来源。"""
-    path = HELP_DIR / "faq.md"
-    if not path.is_file():
-        raise http_error("help_unavailable", "帮助文档尚未准备（请联系管理员）")
-    return {"markdown": path.read_text(encoding="utf-8")}
-
-
-@app.get("/api/legal/{doc}")
-def legal_document(doc: str) -> dict:
-    """隐私政策 / 用户协议（P7-A）：以仓库 `docs/legal/` 为唯一来源。"""
-    files = {"privacy": "privacy-policy.md", "terms": "terms-of-service.md"}
-    if doc not in files:
-        raise http_error("invalid_request", "未知文档", detail=f"known={sorted(files)}")
-    path = LEGAL_DIR / files[doc]
-    if not path.is_file():
-        raise http_error("invalid_request", "文档尚未准备（请联系管理员）")
-    return {"doc": doc, "markdown": path.read_text(encoding="utf-8"),
-            "version": _legal_version(path)}
+# 2026-11 后端拆分第一刀：help/legal 只读路由已迁至 web/backend/api/meta.py；
+# 端点路径与行为不变（router 内定义，main 只做装配）。
+app.include_router(meta_router)
 
 
 # ------------------------------------------------------------------ RAG 知识库（P6-A）

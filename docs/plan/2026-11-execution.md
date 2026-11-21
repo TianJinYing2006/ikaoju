@@ -6,7 +6,7 @@
 
 ## 0. 一句话结论
 
-**阶段 0（止血）全部完成；阶段 1 的 figures 自动校验完成、评测 v2 只完成了隔离基础；阶段 2 完成了 RunContext / 节点写回 / 评测并发隔离这三个高风险核心，完整 ports 化与 contextvar 去除未做；阶段 3 后端拆分未做（只做了三处安全加固）；阶段 4 只完成了仓库卫生与 figures 守卫；阶段 5 完成 README 重写与本报告。** 计划中依赖外部条件（API key 跑评测、真实浏览器截图/录屏、GitHub runner 验证、生产部署权限）的项未完成，均如实登记在 §3。
+**阶段 0（止血）全部完成；阶段 1 的 figures 自动校验完成、评测 v2 只完成了隔离基础；阶段 2 完成了 RunContext / 节点写回 / 评测并发隔离这三个高风险核心，完整 ports 化与 contextvar 去除未做；阶段 3 后端拆分完成第一刀（`api/meta.py` 薄路由层）与三处安全加固，完整拆分未做；阶段 4 只完成了仓库卫生与 figures 守卫；阶段 5 完成 README 重写与本报告。** 计划中依赖外部条件（API key 跑评测、真实浏览器截图/录屏、GitHub runner 验证、生产部署权限）的项未完成，均如实登记在 §3。
 
 全量测试：**1527 收集 / 1446 通过 / 81 跳过 / 0 失败**（Python 3.13 + `.deps`，2026-11-22 本机）。
 6 个仓库守卫 + `tools/gen_figures.py --check` 全部通过。
@@ -25,6 +25,7 @@
 | `90ebc09` | **后端加固**：① `retry_run` 复用 `_check_input_safety`（审核/注入/空主题，此前绕过）② `_audit` 失败写 ERROR 日志（不再静默丢审计）③ Passkey 在 staging/production 未显式配置时 fail-closed（原 localhost 默认值导致 `enabled()` 恒真） | `tests/test_runs_management_api.py` +2；`tests/test_passkeys.py` +3 |
 | `17f3c6b` | **ADR-0019**：RunContext / 节点写回 / per-run 隔离的背景、方案、取舍、影响；figures ADR 计数 18→19 | `check_doc_consistency` ADR 索引 OK |
 | `7b11af2` | **仓库卫生**：`icon-lab/`（44 文件）、`ppt-report/`（33 文件）移出 git 跟踪（本地文件保留），`.tmp/` 忽略 | `gen_figures --check`；`git status` 干净（除用户本地未跟踪目录） |
+| `（本次）` | **后端拆分第一刀**：`help`/`legal` 只读路由 → `web/backend/api/meta.py`（`include_router` 装配，路径/行为不变），建立 `api/` 薄路由层模式；main.py 减少约 55 行 | `tests/test_moderation_api.py`、`tests/test_web_guardrails.py`、`tests/test_auth_api.py` 全绿 |
 | （本报告） | 文档：README 重写、执行报告 | `check_doc_consistency` 6/6 OK |
 
 另外：
@@ -43,7 +44,7 @@
 | 阶段 1：figures 自动生成 + CI 守卫 | ✅ 完成 | 两层校验；结构事实（ADR/迁移/需求/测试文件/守卫清单/代码规模）机器校验 |
 | 阶段 1：评测 v2（固定证据池回放、跨模型族独立裁判、人工抽检、RAG 评测集） | ⚠️ 未完成 | 需要真实 API key 与评测预算；本机无法产出可信新基线。仅完成并发隔离（评测数据可信度的前置）。方案已写入 ADR-0019 §方案 4 与本报告 §4 |
 | 阶段 2：RunContext / per-run 隔离 / 节点写回 / 消除类级计数与 contextvar | ⚠️ 部分 | RunContext + 写回 + per-run 已完成；**类级 LLM 计数与 contextvar 仍是现状**（全仓 300+ 调用点，拆改需逐模块回归，超出单晚安全范围） |
-| 阶段 3：后端拆分（app factory + routers + services + repositories） | ❌ 未做 | 只完成三处安全加固。`main.py` 仍 3800+ 行；拆分方案与顺序见 §4；风险：66 路由与模块级单例深度耦合，单晚机械搬移会破坏 1500+ 测试覆盖 |
+| 阶段 3：后端拆分（app factory + routers + services + repositories） | ⚠️ 部分 | 完成**第一刀**：`help`/`legal` 只读路由拆到 `web/backend/api/meta.py`（`include_router` 装配，行为/路径不变），建立 `web/backend/api/` 薄路由层的模式；外加三处安全加固。`main.py` 仍 3,8xx 行，完整拆分方案与顺序见 §3 第 2 条 |
 | 阶段 4：coverage / mypy / pip-audit / Windows job / npm devDeps | ❌ 未做 | 需先本地安装并跑通工具（`.deps` 未含 pytest-cov/mypy），否则加进 CI 是不负责任的「红门禁」；登记为下一步 |
 | 阶段 4：icon-lab / ppt-report 移出、github 元数据 | ⚠️ 部分 | 仓库卫生完成；GitHub description/homepage 需远端权限，未改 |
 | 阶段 5：README 重写 + 截图 + 90s demo | ⚠️ 部分 | README 完成；截图/录屏未做（需构建前端 + 真实浏览器会话，未在本晚执行；`DR_DEMO=1` 路径可复现） |
