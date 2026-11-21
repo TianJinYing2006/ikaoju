@@ -294,6 +294,16 @@ class LLMClient:
             io = LLMClient.model_io_stats.setdefault(self.model, {"input": 0, "output": 0})
             io["input"] += inp
             io["output"] += out
+        # 2026-11：run 级账本（由 run_id 从 runtime 注册表查找）。运行期统计以账本为准，
+        # 不再把「这次 run 用了多少」押在类级全局计数器上（并发 run 会互相污染）。
+        ledger = None
+        if state is not None:
+            from research_engine.runtime.ledger import ledger_for
+
+            ledger = ledger_for(getattr(state, "run_id", ""))
+        if ledger is not None:
+            ledger.add(model=self.model, role=self.role, input_tokens=inp,
+                       output_tokens=out, total_tokens=total)
         if reservation is not None:
             settle_call(reservation, total)
         elif state is not None:

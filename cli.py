@@ -98,14 +98,11 @@ def main():
 
     # W3（Q6）：成本展示（精确 token + 保守上界，人民币为主）
     print(format_cost_report(result.token_used))
-    # W3（Q3=D'）：run 级对账差值（>0 = 本 run 存在未传 state 的 LLM 调用；0 = 完全一致）
-    diff = graph.tokens_diff
-    if diff is None:
-        pass  # 异常路径：不在 CLI 打印对账（trace URL 已兜底回显）
-    elif diff > 0:
-        print(f"⚠️ [对账] 本 run 有 {diff:,} tokens 的 LLM 调用未计入预算（疑漏传 state，见 Q3=D'）")
-    else:
-        print(f"✅ [对账] 本 run 本地 token 计数与预算口径一致（{result.token_used:,} tokens）")
+    # 2026-11：run 级 token 账本（替代类级全局计数器对账；并发 run 之间不再互相污染）
+    ledger = getattr(graph, "last_ledger", None)
+    if ledger:
+        print(f"✅ [账本] 本 run {ledger['total']:,} tokens（预算口径 {result.token_used:,} tokens；"
+              f"模型桶 {', '.join(f'{k}:{v}' for k, v in sorted(ledger['by_model'].items())) or '无'})")
 
     # 五件套之④ 收口：失败必须以非零码退出，否则脚本化调用方（CI/批处理）无法感知。
     if result.run_status == RUN_STATUS_FAILED:

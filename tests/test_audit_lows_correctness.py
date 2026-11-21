@@ -105,6 +105,7 @@ def _graph_with_fake_stream(chunks) -> DeepResearchGraph:  # noqa: ANN001
     obj.graph = _FakeGraph(chunks)
     obj.last_exception = None
     obj.last_stop_reason = STOP_COMPLETED
+    obj.last_ledger = None
     obj.tokens_diff = None
     return obj
 
@@ -113,28 +114,38 @@ def _plan_chunk() -> dict:
     return {"topic": "t", "progress": [{"stage": "plan", "msg": "planned"}]}
 
 
-def test_iter_steps_early_close_records_cancelled_and_tokens_diff():
-    token_base = LLMClient.tokens_total
+def test_iter_steps_early_close_records_cancelled_and_ledger():
+    """提前 close 也必须落 token 账本快照（2026-11：取代类级计数器对账）。"""
+    from research_engine.runtime import TokenLedger
+
     obj = _graph_with_fake_stream([_plan_chunk(), _plan_chunk()])
-    gen = obj._iter_steps(None, {}, None, token_base,
+    ledger = TokenLedger()
+    ledger.add(model="qwen-plus", role="critic", total_tokens=7)
+    obj._active_ledger = ledger
+    gen = obj._iter_steps(None, {}, None, None,
                           fallback_state=ResearchState(topic="t"))
     step = next(gen)
     assert step.node == "plan" and step.terminal is False
 
     gen.close()  # 模拟消费方提前停止（GeneratorExit）
     assert obj.last_stop_reason == STOP_CANCELLED, "提前 close 不得停留在旧 stop_reason"
-    assert obj.tokens_diff == 0, "提前 close 也必须落 tokens_diff 对账"
+    assert obj.last_ledger is not None, "提前 close 也必须落账本快照"
+    assert obj.last_ledger["total"] == 7
 
 
-def test_iter_steps_normal_completion_emits_terminal_and_records_diff():
-    token_base = LLMClient.tokens_total
+def test_iter_steps_normal_completion_emits_terminal_and_records_ledger():
+    from research_engine.runtime import TokenLedger
+
     obj = _graph_with_fake_stream([_plan_chunk()])
-    steps = list(obj._iter_steps(None, {}, None, token_base,
+    ledger = TokenLedger()
+    ledger.add(model="qwen-plus", role="critic", total_tokens=3)
+    obj._active_ledger = ledger
+    steps = list(obj._iter_steps(None, {}, None, None,
                                  fallback_state=ResearchState(topic="t")))
     assert steps[-1].terminal is True
     assert steps[-1].stop_reason == STOP_COMPLETED
     assert obj.last_stop_reason == STOP_COMPLETED
-    assert obj.tokens_diff == 0
+    assert obj.last_ledger is not None and obj.last_ledger["total"] == 3
 
 
 # ---- D-15：文档与实现对齐（行为不变）----

@@ -7,6 +7,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
+from .ledger import TokenLedger
+
 #: 取消谓词：返回 True 表示「当前节点结束后不要再启动下一节点」。
 CancelPredicate = Callable[[], bool]
 
@@ -22,6 +24,8 @@ class RunContext:
     trace_id: Optional[str] = None
     cancel: Optional[CancelPredicate] = None
     started_at: float = field(default_factory=time.time)
+    #: 本 run 的 token 账本（2026-11：运行期统计以它为准，不再依赖类级全局计数器）
+    ledger: Any = field(default_factory=TokenLedger)
 
     def cancelled(self) -> bool:
         """协作式取消判定；谓词自身抛错**向上传播**（不在这里静默吞掉，避免掩盖坏谓词）。"""

@@ -230,11 +230,14 @@ def _make_graph_with(fake: _FakeGraph):
 
 
 def _patch_no_observability(monkeypatch):
-    """把观测（需求 33：trace id 打桩为 None → 无观测路径）与 token 对账打桩，保证零 LLM / 零网络。"""
+    """把观测（需求 33：trace id 打桩为 None → 无观测路径）打桩，保证零 LLM / 零网络。
+
+    2026-11：引擎运行期不再读类级 token 计数器（改用 RunContext 账本），
+    因此只需要打桩 trace id。
+    """
     import research_engine.graph as G
 
     monkeypatch.setattr(G, "create_trace_id", lambda thread_id: None)
-    monkeypatch.setattr(G.LLMClient, "tokens_total", 0, raising=False)
 
 
 def test_failed_is_reachable_via_exception_contract(monkeypatch):
@@ -284,9 +287,10 @@ def test_recover_preserves_checkpoint_state(monkeypatch):
     out = g.run("题目")
     assert out.report == "半份报告"
     assert out.run_status == RUN_STATUS_FAILED  # 无完整报告 + 有降级记录
-    # Q3=D'：异常路径仍会算 tokens_diff ⇒ token_used 必须有默认值，否则在此处二次抛错
+    # 2026-11：运行期 token 统计改用 run 级账本（旧 tokens_diff 恒 None）
     assert isinstance(out.token_used, int)
-    assert g.tokens_diff is not None
+    assert g.last_ledger is not None
+    assert g.tokens_diff is None
 
 
 # ---------------------------------------------------------------- 节点级降级落点（degraded 可达）

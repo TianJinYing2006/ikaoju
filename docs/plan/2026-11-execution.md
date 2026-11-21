@@ -6,7 +6,7 @@
 
 ## 0. 一句话结论
 
-**阶段 0（止血）全部完成；阶段 1 的 figures 自动校验、独立裁判脚手架与确定性回放完成，评测 v2 实跑未完成；阶段 2 完成了 RunContext / 节点写回 / 评测并发隔离 / RAG 作用域显式化，类级 LLM 计数与其余 contextvar 去除未做；阶段 3 后端拆分完成第一刀（`api/meta.py` 薄路由层）与三处安全加固，完整拆分未做；阶段 4 完成仓库卫生、coverage 门禁、Windows 沙箱 job 与文档结构收敛（单页状态页），pip-audit/mypy 未加；阶段 5 完成 README 重写与本报告。** 计划中依赖外部条件（API key 跑评测、真实浏览器截图/录屏、GitHub runner 验证、生产部署权限）的项未完成，均如实登记在 §3。
+**阶段 0（止血）全部完成；阶段 1 的 figures 自动校验、独立裁判脚手架与确定性回放完成，评测 v2 实跑未完成；阶段 2 完成了 RunContext / 节点写回 / 评测并发隔离 / RAG 作用域显式化 / run 级 TokenLedger（引擎不再依赖类级 LLM 计数器），评测工具类级汇总与 runtime_profile/usage contextvar 未动；阶段 3 后端拆分完成第一刀（`api/meta.py` 薄路由层）与三处安全加固，完整拆分未做；阶段 4 完成仓库卫生、coverage 门禁、Windows 沙箱 job 与文档结构收敛，pip-audit/mypy 未加；阶段 5 完成 README 重写与本报告。** 计划中依赖外部条件（API key 跑评测、真实浏览器截图/录屏、GitHub runner 验证、生产部署权限）的项未完成，均如实登记在 §3。
 
 全量测试：**1527 收集 / 1446 通过 / 81 跳过 / 0 失败**（Python 3.13 + `.deps`，2026-11-22 本机）。
 6 个仓库守卫 + `tools/gen_figures.py --check` 全部通过。
@@ -31,6 +31,7 @@
 | `（本轮）` | **确定性回放**：`research_engine/search/replay.py`（录制 fixture → 零网络回放、未录制 query 可归因、坏 fixture fail-fast）；factory `SEARCH_PROVIDER=replay`；eval CLI `--replay-dir`（同时关 arXiv） | `tests/test_search_replay.py` 14 例（含「失败不泄漏 config 覆盖」回归） |
 | `（本轮）` | **文档结构收敛**：新增单页 `docs/status/current.md`（能做什么/进行中/不宣称什么）；`docs/project-status.md` 降级为「历史长日志」并加归档横幅 | `check_md_tables` / `check_doc_consistency` 全过 |
 | `（本轮）` | **contextvar 隐式依赖（RAG 作用域）显式化**：`create_graph(rag_scope=...)` / `Researcher(rag_scope=...)`；runner/worker 通过 `accepts_rag_scope` 能力标记显式注入，不再依赖「先 set_scope 再建图」的顺序；contextvar 仅作库函数/测试兜底 | `tests/test_rag_scope.py` 新增 3 例（显式优先于 contextvar、factory 透传、能力标记）；worker/loadtest 回归全绿 |
+| `（本轮）` | **类级 LLM 计数器（引擎运行期依赖）消除**：新增 `runtime/ledger.py`（run 级 `TokenLedger` + 进程级 run_id 注册表）；`create_graph/run/iter_run` 注入 `state.run_id` 并登记账本，LLM 记账按 run_id 写入；graph 输出 `last_ledger` 快照，`tokens_diff` 恒 None（旧字段仅兼容）；CLI 改打印 run 账本 | `tests/test_run_ledger.py` 7 例（累加/并发/注册表/按 run 隔离/无账本不崩）；HITL/Arm1/审计回归全绿 |
 | （本报告） | 文档：README 重写、执行报告 | `check_doc_consistency` 6/6 OK |
 
 另外：
@@ -48,7 +49,7 @@
 | 阶段 0：README/文档数字校正 | ✅ 完成 | README 重写 + figures 回填 |
 | 阶段 1：figures 自动生成 + CI 守卫 | ✅ 完成 | 两层校验；结构事实（ADR/迁移/需求/测试文件/守卫清单/代码规模）机器校验 |
 | 阶段 1：评测 v2（固定证据池回放、跨模型族独立裁判、人工抽检、RAG 评测集） | ⚠️ 部分 | **脚手架已完成**：独立裁判配置/provenance/CLI + **网络检索确定性回放**（`SEARCH_PROVIDER=replay` / `--replay-dir`，含 14 例测试）；**实跑未做**：需要真实 API key 与预算，arXiv/RAG 的 replay 仍待做 |
-| 阶段 2：RunContext / per-run 隔离 / 节点写回 / 消除类级计数与 contextvar | ⚠️ 部分 | RunContext + 写回 + per-run 已完成；**RAG 检索作用域已显式化**（`create_graph(rag_scope=...)`，runner/worker 不再依赖 set_scope 顺序）；**类级 LLM 计数与 runtime_profile/usage contextvar 仍是现状**（需按模块分批显式化） |
+| 阶段 2：RunContext / per-run 隔离 / 节点写回 / 消除类级计数与 contextvar | ⚠️ 部分 | RunContext + 写回 + per-run 已完成；RAG 检索作用域已显式化；**引擎运行期不再依赖类级 LLM 计数器**（改 run 级 `TokenLedger` + `run_id` 注册表，`tokens_diff` 废弃）；**剩余**：评测工具仍用类级计数器做跨 run 汇总、runtime_profile/usage 的 contextvar 仍待按模块显式化 |
 | 阶段 3：后端拆分（app factory + routers + services + repositories） | ⚠️ 部分 | 完成**第一刀**：`help`/`legal` 只读路由拆到 `web/backend/api/meta.py`（`include_router` 装配，行为/路径不变），建立 `web/backend/api/` 薄路由层的模式；外加三处安全加固。`main.py` 仍 3,8xx 行，完整拆分方案与顺序见 §3 第 2 条 |
 | 阶段 4：coverage / mypy / pip-audit / Windows job / npm devDeps | ⚠️ 部分 | **coverage 门禁（3.13 档 ≥73%，实测 75%）与 Windows 专属安全测试 job 已接入**（本机 Windows 实测 `test_code_exec` 29 例 + `test_arm2_code_injection` 39 例全过）；pip-audit / mypy / npm devDeps 未做 |
 | 阶段 4：icon-lab / ppt-report 移出、github 元数据 | ⚠️ 部分 | 仓库卫生完成；GitHub description/homepage 需远端权限，未改 |
@@ -106,10 +107,10 @@ py -3.13 tools/check_doc_consistency.py
 → 6 项 [OK]（figures tag / ICP / CI 守卫清单 / 开放注册口径 / ADR 索引 / README 数字 == figures）
 
 py -3.13 tools/gen_figures.py --check
-→ 结构事实全部 [OK]（ADR 19 / 需求 45 / 迁移 31+31 / 测试文件 160 / Python 320 文件 68,912 行 / 守卫 6）
+→ 结构事实全部 [OK]（ADR 19 / 需求 45 / 迁移 31+31 / 测试文件 161 / Python 文件与行数以 figures 为准 / 守卫 6）
 
 py -3.13 -m pytest tests/ --tb=no -q --cov=research_engine --cov=web --cov-fail-under=73
-→ 1467 passed, 81 skipped；coverage 75.01%，Required test coverage of 73% reached
+→ 1474 passed, 81 skipped；coverage 75.01%，Required test coverage of 73% reached
 
 Windows 本机：py -3.13 -m pytest tests/test_code_exec.py tests/test_arm2_code_injection.py -q
 → 29 + 39 passed（对应 CI security-windows job）

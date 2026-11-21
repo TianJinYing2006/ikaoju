@@ -38,7 +38,6 @@ from research_engine.critic import Critic, route_critic
 from research_engine.evidence import dedupe_new_findings, ensure_evidence_identity  # F08/F10
 from research_engine.evidence_grading import grade_evidence_chain  # 需求 34 E5：分级处置
 from research_engine.failure_reasons import describe_exception  # W8 Arm 1（§5.1.4）
-from research_engine.llm.client import LLMClient  # W3（Q3=D'）：类级计数做 run 级对账基线
 from research_engine.observability import (  # 需求 33：OTel 原生可观测层（W3 接入的迁移）
     create_trace_id,
     span_node,
@@ -47,6 +46,7 @@ from research_engine.observability import (  # 需求 33：OTel 原生可观测�
 from research_engine.render import ReportRenderer
 from research_engine.repair import repair_report  # F11（3b）：有界返工
 from research_engine.runtime import new_run_context, with_token_writeback
+from research_engine.runtime.ledger import register_ledger, unregister_ledger
 from research_engine.runtime_profile import effective_research_config
 from research_engine.self_check import run_delivery_self_check  # 需求 34 E4：交付自检
 from research_engine.state import ResearchState, SubQuestion
@@ -163,7 +163,10 @@ class DeepResearchGraph:
         self.critic = Critic()  # llm_fn=None → 生产路径走真实 LLM
         self.renderer = ReportRenderer()  # W2：validate 后渲染可审计展示版（Q1=A 挂 validate→END）
         self.trace_id: str | None = None  # 需求 33（原 W3 Q2/Q5）：本次运行的 OTel trace id（CLI 收尾回显用）
-        self.tokens_diff: int | None = None  # W3（Q3=D'）：本次 run 的对账差值（漏传 state 累计）
+        # 2026-11：run 级账本快照（RunContext.ledger）。运行期 token 统计以它为准；
+        # tokens_diff 保留字段仅为兼容旧调用方，恒为 None（不再用类级全局计数器对账）。
+        self.last_ledger: Dict[str, Any] | None = None
+        self.tokens_diff: int | None = None
         # W8 Arm 1（§5.1.4）：异常退出契约 —— 保留原始异常对象供调试。
         # run() 不再 re-raise（改为返回 run_status="failed" 的 state），故调用方只能从这里取到异常。
         self.last_exception: BaseException | None = None
@@ -737,7 +740,9 @@ class DeepResearchGraph:
                "recursion_limit": effective_research_config().max_total_hops * 2 + 20}
         run_ctx.trace_id = create_trace_id(thread_id)  # 未启用 → None（走无观测路径）
         self.trace_id = run_ctx.trace_id
-        token_base = LLMClient.tokens_total  # Q3=D'：run 级对账基线（类级累计跨 run 增长）
+        # 2026-11：账本登记进进程级注册表（按 run_id 查找；状态里只放可序列化的 run_id）。
+        initial.run_id = thread_id
+        register_ledger(thread_id, run_ctx.ledger)
         self.last_exception = None
         try:
             if not self.trace_id:
@@ -763,7 +768,10 @@ class DeepResearchGraph:
         # Q3=D'：基线对齐后差值 = 本次 run 中"调用 LLM 但未传 state"的 token 累计
         # ⚠️ 异常路径同样会走到这里 ⇒ 兜底 state 必须保证 token_used 有默认值（Pydantic 默认 0），
         # 否则「转为结构化状态」会变成「换个地方崩」。
-        self.tokens_diff = (LLMClient.tokens_total - token_base) - result.token_used
+        # 2026-11：run 级账本快照取代「类级全局计数器 - 基线」对账（并发 run 不再互相污染）。
+        self.last_ledger = run_ctx.ledger.snapshot()
+        self.tokens_diff = None
+        unregister_ledger(thread_id)
         return result
 
     def _recover_from_exception(
@@ -870,7 +878,9 @@ class DeepResearchGraph:
                "recursion_limit": effective_research_config().max_total_hops * 2 + 20}
         run_ctx.trace_id = create_trace_id(thread_id)  # 未启用 → None（走无观测路径）
         self.trace_id = run_ctx.trace_id
-        token_base = LLMClient.tokens_total  # Q3=D'：与 run() 同一对账口径
+        initial.run_id = thread_id
+        register_ledger(thread_id, run_ctx.ledger)
+        self._active_ledger = run_ctx.ledger
         self.last_exception = None
         self.last_stop_reason = STOP_RUNNING
         # 生成器整体包在 trace 内（消费是连续的）；未启用观测时用 nullcontext 保持结构一致。
@@ -878,23 +888,30 @@ class DeepResearchGraph:
                            user_instructions=user_instructions)
                if self.trace_id else nullcontext())
         with ctx:
-            yield from self._iter_steps(
-                stream_input, cfg,
-                run_ctx.cancelled if should_cancel is not None else None,
-                token_base,
-                fallback_state=initial, skip_leading=resume)
+            try:
+                yield from self._iter_steps(
+                    stream_input, cfg,
+                    run_ctx.cancelled if should_cancel is not None else None,
+                    None,
+                    fallback_state=initial, skip_leading=resume)
+            finally:
+                unregister_ledger(thread_id)
 
     def _iter_steps(
         self,
         stream_input: Any,
         cfg: Dict[str, Any],
         should_cancel: Callable[[], bool] | None,
-        token_base: int,
+        token_base: int | None = None,
         *,
         fallback_state: ResearchState,
         skip_leading: bool = False,
     ) -> Iterator[RunStep]:
-        """:meth:`iter_run` 的生成器主体（分离出来只为让 try/except 覆盖整个流）。"""
+        """:meth:`iter_run` 的生成器主体（分离出来只为让 try/except 覆盖整个流）。
+
+        ``token_base`` 仅为兼容旧调用方保留（2026-11 起运行期 token 统计改用
+        ``RunContext.ledger``，不再依赖类级全局计数器）。
+        """
         seen_degradations = 0
         index = 0
         last_state = fallback_state
@@ -951,7 +968,7 @@ class DeepResearchGraph:
             # Q3=D'：先对账再 yield —— 消费方收到终局 step 后常立即 break（生成器被 close，
             # yield 之后的语句不会执行），对账放 yield 前保证值一定落库（D-17）。
             self.last_stop_reason = stop
-            self.tokens_diff = (LLMClient.tokens_total - token_base) - last_state.token_used
+            self._record_ledger_snapshot()
             terminal_emitted = True
             yield RunStep(index=index, node=None, state=last_state,
                           new_degradations=(), duration_ms=0,
@@ -959,10 +976,16 @@ class DeepResearchGraph:
         finally:
             # 2026-11 审计 #340a（D-17）：消费方提前 break/close（GeneratorExit）时走不到
             # 上面的终局 yield；GeneratorExit 中不允许再 yield，只能在 finally 落库，
-            # 避免 last_stop_reason / tokens_diff 停留在旧值。提前停止按协作式取消记录。
+            # 避免 last_stop_reason 停留在旧值（账本快照同样在 finally 兜底）。提前停止按协作式取消记录。
             if not terminal_emitted:
                 self.last_stop_reason = STOP_CANCELLED
-                self.tokens_diff = (LLMClient.tokens_total - token_base) - last_state.token_used
+                self._record_ledger_snapshot()
+
+    def _record_ledger_snapshot(self) -> None:
+        """把本 run 的 token 账本快照落到 graph 实例（终局 / 提前关闭两条路径共用）。"""
+        ledger = getattr(self, "_active_ledger", None)
+        if ledger is not None:
+            self.last_ledger = ledger.snapshot()
 
 
 def create_graph(checkpointer: Any = None, *, rag_scope: Any = None) -> DeepResearchGraph:

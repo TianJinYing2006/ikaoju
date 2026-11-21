@@ -168,6 +168,10 @@ class Citation(BaseModel):
 
 class ResearchState(BaseModel):
     """研究流程的全局状态。"""
+
+    # 2026-11：run 标识随状态序列化（checkpoint 可恢复）；LLM 记账据此找到本 run 的
+    # TokenLedger（进程级注册表，见 runtime/ledger.py），不再用类级全局计数器。
+    run_id: str = Field(default="", description="本轮 run 的 id（CLI/Web/评测统一；空=未绑定）")
     # 输入
     topic: str = Field(description="研究主题")
     user_instructions: str = Field(default="", description="用户附加要求")

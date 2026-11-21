@@ -21,5 +21,6 @@
 from __future__ import annotations
 
 from .context import RunContext, new_run_context, with_token_writeback
+from .ledger import TokenLedger
 
-__all__ = ["RunContext", "new_run_context", "with_token_writeback"]
+__all__ = ["RunContext", "TokenLedger", "new_run_context", "with_token_writeback"]
