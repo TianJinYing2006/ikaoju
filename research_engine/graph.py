@@ -46,6 +46,7 @@ from research_engine.observability import (  # 需求 33：OTel 原生可观测�
 )
 from research_engine.render import ReportRenderer
 from research_engine.repair import repair_report  # F11（3b）：有界返工
+from research_engine.runtime import new_run_context, with_token_writeback
 from research_engine.runtime_profile import effective_research_config
 from research_engine.self_check import run_delivery_self_check  # 需求 34 E4：交付自检
 from research_engine.state import ResearchState, SubQuestion
@@ -231,6 +232,7 @@ class DeepResearchGraph:
 
     # ---- 节点实现（Q7=A：纯函数，只 return delta，绝不就地改 state）----
 
+    @with_token_writeback
     def _plan(self, state: ResearchState) -> Dict[str, Any]:
         with span_node("规划", node="plan", input={"topic": state.topic[:200]}):
             subs: List[SubQuestion] = self.planner.plan(
@@ -253,7 +255,6 @@ class DeepResearchGraph:
                 # W8 Arm 1：planner 降级记录（如 LLM 失败退化为「主题即子问题」）交给 reducer
                 "degradation_log": self.planner.drain_degradations(),
                 "status": "planning",
-                "token_used": state.token_used,  # Q6-B：planner 的 LLM token 累计写回
                 "progress": [
                     {"stage": "plan", "msg": f"已分解为 {len(subs)} 个子问题，种子查询入队"}
                 ],
@@ -265,6 +266,7 @@ class DeepResearchGraph:
     # 另外：interrupt 节点**不包 span_node** —— GraphInterrupt 会从 with 块抛出，
     # 若包着会把「正常挂起」记成 span 错误（污染观测口径）。
 
+    @with_token_writeback
     def _clarify(self, state: ResearchState) -> Dict[str, Any]:
         """H1：澄清判定。不清晰 ⇒ 置 clarify_needed 进 await_clarify；失败即跳过（零阻塞）。"""
         with span_node("澄清判定", node="clarify", input={"topic": state.topic[:200]}):
@@ -274,9 +276,6 @@ class DeepResearchGraph:
             # TBD-1：判定失败按「跳过澄清」继续；治理事件（非故障，不推 degraded）
             return {
                 "clarify_needed": False,
-                # 2026-11 修复：clarifier 的 LLM 调用经 router(state=...) 已累加 state.token_used，
-                # 必须随 delta 写回，否则预算硬闸看不到 HITL 路径的消耗（与其它节点同约定）。
-                "token_used": state.token_used,
                 "planner_events": [{"event": "clarify_skipped", "phase": "clarify",
                                     "reason": str(outcome.get("reason") or "llm_error")[:200]}],
                 "progress": [{"stage": "clarify", "msg": "澄清判定失败，跳过（零阻塞）"}],
@@ -286,7 +285,6 @@ class DeepResearchGraph:
             return {
                 "clarify_needed": True,
                 "clarify_round": round_no,
-                "token_used": state.token_used,
                 "clarification": {**state.clarification, "questions": outcome["questions"]},
                 "planner_events": [{"event": "clarify_questioned", "phase": "clarify",
                                     "round": round_no,
@@ -297,13 +295,13 @@ class DeepResearchGraph:
             }
         return {
             "clarify_needed": False,
-            "token_used": state.token_used,
             "planner_events": [{"event": "clarify_cleared", "phase": "clarify",
                                 "round": state.clarify_round,
                                 "reason": str(outcome.get("reason") or "")[:200]}],
             "progress": [{"stage": "clarify", "msg": "范围清晰，无需澄清"}],
         }
 
+    @with_token_writeback
     def _await_clarify(self, state: ResearchState) -> Dict[str, Any]:
         """H1：interrupt 等待用户回答（resume 值 = API 存的 resume payload）。"""
         questions = list((state.clarification or {}).get("questions") or [])
@@ -333,6 +331,7 @@ class DeepResearchGraph:
                                   else f"已收到澄清回答（第 {state.clarify_round} 轮）")}],
         }
 
+    @with_token_writeback
     def _await_plan(self, state: ResearchState) -> Dict[str, Any]:
         """H2：interrupt 停等计划批准/修改意见（批准是人的语义：到期由执行器收 TIMED_OUT）。"""
         round_no = state.approval_round + 1
@@ -367,6 +366,7 @@ class DeepResearchGraph:
                                   else f"收到计划修改意见（第 {round_no} 轮）")}],
         }
 
+    @with_token_writeback
     def _revise_plan(self, state: ResearchState) -> Dict[str, Any]:
         """H2：按用户反馈修订计划（失败保留原计划，并在下一张卡标注 revision_failed）。"""
         feedback = str((state.plan_decision or {}).get("text") or "")
@@ -379,9 +379,6 @@ class DeepResearchGraph:
             "subquestions": new_subs,
             "frontier": frontier,
             "per_subq_hop": {s.id: 0 for s in new_subs},
-            # 2026-11 修复：revise_plan 的 LLM 调用已累加 state.token_used，
-            # 必须写回 delta（HITL 审批路径同样受 token 硬闸约束）。
-            "token_used": state.token_used,
             # 修订失败 = 沿用原计划：版本号不递增（与 replan 降级同口径）
             "plan_version": state.plan_version + (0 if failed else 1),
             "plan_decision": {**(state.plan_decision or {}), "revise_failed": failed},
@@ -391,6 +388,7 @@ class DeepResearchGraph:
                           "msg": ("计划修订失败，保留原计划" if failed else "计划已按反馈修订")}],
         }
 
+    @with_token_writeback
     def _research(self, state: ResearchState) -> Dict[str, Any]:
         rc = effective_research_config()
         frontier = list(state.frontier)
@@ -489,6 +487,7 @@ class DeepResearchGraph:
             ],
         }
 
+    @with_token_writeback
     def _critic(self, state: ResearchState) -> Dict[str, Any]:
         # 先硬闸（确定性），未触发才调 LLM；结果写回 state 各 verdict 字段并返回 signal
         # W3（Q2=C1'）：扁平 span 与对向检索成对 R{k}-裁决
@@ -513,7 +512,6 @@ class DeepResearchGraph:
             "critic_stop_reason": state.critic_stop_reason,
             "critic_cited_evidence_ids": state.critic_cited_evidence_ids,
             "next_queries": state.next_queries,
-            "token_used": state.token_used,  # Q6-B：critic 的 LLM token 累计写回
             "reflection_log": [entry],  # add reducer 追加（Q7）
             # 需求 16：critic 治理事件（next_queries sq_id 归一化）并入同一治理事件流
             "planner_events": self.critic.drain_events(),
@@ -524,6 +522,7 @@ class DeepResearchGraph:
             ],
         }
 
+    @with_token_writeback
     def _revise(self, state: ResearchState) -> Dict[str, Any]:
         rc = effective_research_config()
         with span_node(f"R{state.depth}-修订", node="revise",
@@ -577,7 +576,6 @@ class DeepResearchGraph:
                     # replan 与 plan 共用同一事件通道，避免规范化事件丢失。
                     "planner_events": self.planner.drain_planner_events(),
                     "degradation_log": self.planner.drain_degradations(),
-                    "token_used": state.token_used,  # Q6-B：replan 的 LLM token 累计写回
                     "progress": [
                         {"stage": "revise", "msg": f"重分解：{len(new_subs)} 个子问题（replan_count={state.replan_count + 1}{remap_note}）"}
                     ],
@@ -601,12 +599,12 @@ class DeepResearchGraph:
                 "frontier": list(state.frontier) + appended,
                 "needs_replan": False,
                 "next_queries": [],
-                "token_used": state.token_used,  # Q6-B：本步无新 LLM 调用，原样写回保持最新累计
                 "progress": [
                     {"stage": "revise", "msg": msg}
                 ],
             }
 
+    @with_token_writeback
     def _write(self, state: ResearchState) -> Dict[str, Any]:
         # F08（审计）：压缩产物写入**工作摘要层** working_findings；原文层 findings 保持
         # append-only（不再被覆写）。ADR-0004 编号一致性不变量保留：Writer 与 Validator
@@ -623,11 +621,11 @@ class DeepResearchGraph:
                 self.writer.drain_degradations() + self.context.drain_degradations()
             ),
             "status": "writing",
-            "token_used": state.token_used,  # Q6-B：writer+compress 的 LLM token 累计写回
             "progress": [{"stage": "write",
                           "msg": f"报告生成完成（工作证据 {len(working)} 条 / 原文 {len(state.findings)} 条）"}],
         }
 
+    @with_token_writeback
     def _validate(self, state: ResearchState) -> Dict[str, Any]:
         with span_node("校验", node="validate"):
             # F08（审计）：编号协议基准 = 工作摘要层（Writer 所见同一份）；原文层作为
@@ -645,13 +643,13 @@ class DeepResearchGraph:
             # W8 Arm 1（§5.1.2 判定规则）：此处节点内的降级记录已由各节点经 reducer 追加进
             # state.degradation_log，故直接按「tracker 是否为空 + 有无报告」推导 run_status。
             "run_status": state.resolve_run_status(has_report=bool(state.report)),
-            "token_used": state.token_used,  # Q6-B：validator 的 LLM token 累计写回
             "progress": [
                 {"stage": "validate",
                  "msg": f"校验完成：{verified}/{len(citations)} 条引用通过（存在性 AND 忠实度）"}
             ],
         }
 
+    @with_token_writeback
     def _repair(self, state: ResearchState) -> Dict[str, Any]:
         """F11（3b）：有界返工 —— 确定性移除未通过校验的论断（含引用标记），随后重走校验。
 
@@ -686,6 +684,7 @@ class DeepResearchGraph:
             }],
         }
 
+    @with_token_writeback
     def _render(self, state: ResearchState) -> Dict[str, Any]:
         # W2（Q1=A/Q4=A/Q6=A/R2.5）：render 节点统一 post-process：
         # 类型标注 + 失败 ⚠️ + 可信声明（双口径）+ 失败附录 + 运行溯源。
@@ -727,10 +726,15 @@ class DeepResearchGraph:
         """
         if thread_id is None:
             thread_id = f"dr-{uuid.uuid4().hex[:12]}"
+        # 2026-11：一次 run 的运行期上下文（run_id / trace / 取消谓词）收敛到 RunContext，
+        # 不再散落在局部变量与实例属性里（每份上下文只属于一次 run，禁止跨 run 共享）。
+        run_ctx = new_run_context(thread_id)
+        thread_id = run_ctx.run_id
         initial = ResearchState(topic=topic, user_instructions=user_instructions)
         cfg = {"configurable": {"thread_id": thread_id},
                "recursion_limit": effective_research_config().max_total_hops * 2 + 20}
-        self.trace_id = create_trace_id(thread_id)  # 未启用 → None（走无观测路径）
+        run_ctx.trace_id = create_trace_id(thread_id)  # 未启用 → None（走无观测路径）
+        self.trace_id = run_ctx.trace_id
         token_base = LLMClient.tokens_total  # Q3=D'：run 级对账基线（类级累计跨 run 增长）
         self.last_exception = None
         try:
@@ -847,6 +851,9 @@ class DeepResearchGraph:
         """
         if thread_id is None:
             thread_id = f"dr-{uuid.uuid4().hex[:12]}"
+        # 2026-11：取消谓词 / trace / run_id 收敛到 RunContext；_iter_steps 只消费上下文。
+        run_ctx = new_run_context(thread_id, cancel=should_cancel)
+        thread_id = run_ctx.run_id
         initial = ResearchState(topic=topic, user_instructions=user_instructions)
         # 需求 35 R3（TBD-4）：resume=True ⇒ 从最新 checkpoint 续跑（不重放已完成节点）；
         # 需求 36：带 resume_value ⇒ Command(resume=...) 注入 HITL 回答；
@@ -859,7 +866,8 @@ class DeepResearchGraph:
             stream_input = initial
         cfg = {"configurable": {"thread_id": thread_id},
                "recursion_limit": effective_research_config().max_total_hops * 2 + 20}
-        self.trace_id = create_trace_id(thread_id)  # 未启用 → None（走无观测路径）
+        run_ctx.trace_id = create_trace_id(thread_id)  # 未启用 → None（走无观测路径）
+        self.trace_id = run_ctx.trace_id
         token_base = LLMClient.tokens_total  # Q3=D'：与 run() 同一对账口径
         self.last_exception = None
         self.last_stop_reason = STOP_RUNNING
@@ -868,8 +876,11 @@ class DeepResearchGraph:
                            user_instructions=user_instructions)
                if self.trace_id else nullcontext())
         with ctx:
-            yield from self._iter_steps(stream_input, cfg, should_cancel, token_base,
-                                        fallback_state=initial, skip_leading=resume)
+            yield from self._iter_steps(
+                stream_input, cfg,
+                run_ctx.cancelled if should_cancel is not None else None,
+                token_base,
+                fallback_state=initial, skip_leading=resume)
 
     def _iter_steps(
         self,
