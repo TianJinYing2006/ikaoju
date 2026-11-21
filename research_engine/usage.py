@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -57,13 +58,37 @@ class UsageRecord:
 _sink: ContextVar[Optional[Callable[[UsageRecord], None]]] = ContextVar(
     "dr_usage_sink", default=None)
 
+#: 2026-11：按 run_id 注册的显式 sink（主链路迁移目标；contextvar 仅作旧调用/单测兜底）。
+#: emit 点携带 run_id 时优先走这里 —— 不再依赖「执行器先 push 再调用」的线程上下文。
+_sinks: dict[str, Callable[[UsageRecord], None]] = {}
+_sinks_lock = threading.Lock()
 
-def emit_usage(record: UsageRecord) -> None:
-    """向当前 sink 发送一条用量；无 sink 时 no-op，sink 失败**必留痕**（P0-8）。"""
+
+def register_usage_sink(run_id: str, sink: Callable[[UsageRecord], None]) -> None:
+    """按 run_id 注册逐调用记账 sink（run 开始调用；与 :func:`unregister_usage_sink` 配对）。"""
+    if not run_id:
+        raise ValueError("register_usage_sink 需要非空 run_id")
+    with _sinks_lock:
+        _sinks[run_id] = sink
+
+
+def unregister_usage_sink(run_id: str) -> None:
+    """注销 run 的 sink（run 结束调用；重复注销安全）。"""
+    with _sinks_lock:
+        _sinks.pop(run_id, None)
+
+
+def usage_sink_for(run_id: str) -> Optional[Callable[[UsageRecord], None]]:
+    """按 run_id 取显式 sink（未注册/空 id ⇒ None）。"""
+    if not run_id:
+        return None
+    with _sinks_lock:
+        return _sinks.get(run_id)
+
+
+def _deliver(sink: Callable[[UsageRecord], None], record: UsageRecord) -> None:
+    """把记录交给一个 sink；失败计数 + ERROR 日志，strict 模式上抛（P0-8）。"""
     global _sink_failures
-    sink = _sink.get()
-    if sink is None:
-        return
     try:
         sink(record)
     except Exception as exc:  # noqa: BLE001 —— 记账旁路：默认不打断主链路，但不许静默
@@ -73,6 +98,16 @@ def emit_usage(record: UsageRecord) -> None:
                    type(exc).__name__, exc)
         if _strict():
             raise UsageSinkError(f"usage sink failed: {type(exc).__name__}: {exc}") from exc
+
+
+def emit_usage(record: UsageRecord, run_id: Optional[str] = None) -> None:
+    """发送一条用量：显式 ``run_id`` 优先走注册表，否则回退 contextvar sink；都没有则 no-op。"""
+    sink = usage_sink_for(run_id or "")
+    if sink is None:
+        sink = _sink.get()
+    if sink is None:
+        return
+    _deliver(sink, record)
 
 
 def push_usage_sink(sink: Callable[[UsageRecord], None]) -> object:

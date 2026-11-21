@@ -56,7 +56,12 @@ from research_engine.streaming import (
     STOP_TIMEOUT,
     RunStep,
 )
-from research_engine.usage import pop_usage_sink, push_usage_sink
+from research_engine.usage import (
+    pop_usage_sink,
+    push_usage_sink,
+    register_usage_sink,
+    unregister_usage_sink,
+)
 
 from .agui import (
     DEGRADATION,
@@ -591,8 +596,9 @@ class Worker:
             deadline_token = set_task_deadline(
                 (timeout_at - datetime.now(UTC)).total_seconds())
         # P1-4：逐调用用量落进 usage_ledger（attempt = 本行 attempt）
-        usage_token = push_usage_sink(make_store_sink(
-            self._store, run_id=run_id, attempt=attempt))
+        usage_sink = make_store_sink(self._store, run_id=run_id, attempt=attempt)
+        usage_token = push_usage_sink(usage_sink)  # 旧路径兜底（搜索/RAG emit 尚无 run_id）
+        register_usage_sink(run_id, usage_sink)  # 2026-11：显式路径（LLM emit 带 run_id）
         # 需求 34 E1：本 run 的网页抓取上下文（预算三闸 + robots + 熔断 + 快照落盘）
         if config.web_snapshot.enabled:
             fetch_token = push_fetch_context(FetchContext.create(
@@ -641,6 +647,7 @@ class Worker:
             if report_token is not None:
                 pop_report_sink(report_token)
             pop_usage_sink(usage_token)
+            unregister_usage_sink(run_id)
             if self._checkpoint_fence is not None:
                 self._checkpoint_fence.clear()
             hb_stop.set()

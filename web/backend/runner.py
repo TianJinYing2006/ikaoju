@@ -52,7 +52,12 @@ from research_engine.streaming import (
     STOP_TIMEOUT,
     RunStep,
 )
-from research_engine.usage import pop_usage_sink, push_usage_sink
+from research_engine.usage import (
+    pop_usage_sink,
+    push_usage_sink,
+    register_usage_sink,
+    unregister_usage_sink,
+)
 
 from .agui import (
     DEGRADATION,
@@ -599,8 +604,9 @@ class RunManager:
         report_buffer = None
         if self._store is not None:
             # P1-4：本线程的逐调用用量落进 usage_ledger（无 store 时为 no-op）
-            usage_token = push_usage_sink(
-                make_store_sink(self._store, run_id=run_id, attempt=1))
+            usage_sink = make_store_sink(self._store, run_id=run_id, attempt=1)
+            usage_token = push_usage_sink(usage_sink)  # 旧路径兜底（搜索/RAG emit 尚无 run_id）
+            register_usage_sink(run_id, usage_sink)  # 2026-11：显式路径（LLM emit 带 run_id）
         try:
             from config import config
 
@@ -748,6 +754,7 @@ class RunManager:
                 reset_task_deadline(deadline_token)
             if usage_token is not None:
                 pop_usage_sink(usage_token)
+            unregister_usage_sink(run_id)
             if fetch_token is not None:
                 pop_fetch_context(fetch_token)
             if report_buffer is not None:

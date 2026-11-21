@@ -296,7 +296,8 @@ class LLMClient:
             kind="llm", provider="dashscope", model=self.model, role=self.role,
             input_tokens=inp, output_tokens=out, total_tokens=total,
             request_id=getattr(resp, "id", None),
-        ))
+            # 2026-11：显式 run_id ⇒ 优先走注册表 sink（无注册时自动回退 contextvar）
+        ), run_id=getattr(state, "run_id", "") if state is not None else "")
 
     @staticmethod
     def chat_json(

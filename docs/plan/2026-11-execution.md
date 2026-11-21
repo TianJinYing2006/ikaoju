@@ -33,6 +33,7 @@
 | `（本轮）` | **contextvar 隐式依赖（RAG 作用域）显式化**：`create_graph(rag_scope=...)` / `Researcher(rag_scope=...)`；runner/worker 通过 `accepts_rag_scope` 能力标记显式注入，不再依赖「先 set_scope 再建图」的顺序；contextvar 仅作库函数/测试兜底 | `tests/test_rag_scope.py` 新增 3 例（显式优先于 contextvar、factory 透传、能力标记）；worker/loadtest 回归全绿 |
 | `（本轮）` | **类级 LLM 计数器（引擎运行期依赖）消除**：新增 `runtime/ledger.py`（run 级 `TokenLedger` + 进程级 run_id 注册表）；`create_graph/run/iter_run` 注入 `state.run_id` 并登记账本，LLM 记账按 run_id 写入；graph 输出 `last_ledger` 快照，`tokens_diff` 恒 None（旧字段仅兼容）；CLI 改打印 run 账本 | `tests/test_run_ledger.py` 7 例（累加/并发/注册表/按 run 隔离/无账本不崩）；HITL/Arm1/审计回归全绿 |
 | `（本轮）` | **ADR-0020**：记录「RAG 作用域显式注入 + run 级 TokenLedger」的背景/方案/取舍，含 msgpack checkpoint 教训；ADR 索引与 figures 计数同步 | `check_doc_consistency` ADR 索引 OK；figures「ADR 20 篇」 |
+| `（本轮）` | **usage sink 显式注册表（去 contextvar 第一步）**：`usage.py` 新增 `register_usage_sink/unregister_usage_sink/usage_sink_for` + `emit_usage(record, run_id=...)` 显式优先；LLM 记账携带 `state.run_id`；runner/worker 注册/注销（contextvar 仅作搜索/RAG emit 的兼容兜底） | 新增 `tests/test_usage_sink_registry.py` 6 例（显式优先不双记、回退、失败计数/strict）；usage/worker 存量测试全绿 |
 | `（本轮）` | **依赖安全巡检（pip-audit 可用后）**：`pip-audit --path .deps` 报 3 组告警——`pypdf 6.16.2`、`urllib3 2.7.0` 在 lock 中已是修复版（6.21.4 / 2.8.0）；**`soupsieve 2.9.2` 为真实可修项**：lock 按 uv 解析改为 `2.10（py<3.11.5）/ 4.1.3（≥3.11.5）`，requirements 增补约束注释 | `pip-audit --path .deps` 输出留档；lock 语法按 uv 同格式手工对齐（CI 安装时验证） |
 | `（本轮）` | **运行档位（RuntimeProfile）显式注入**：`create_graph(..., profile=...)` + 能力标记 `accepts_profile`；`run()/iter_run()` 在 invoke/stream 期间用 `use_profile` 生效并在结束后恢复（不泄漏给同线程下一次 run）；runner/worker 能力探测后透传 profile | 新增 `tests/test_profile_injection.py` 4 例（含恢复 contextvar、worker factory 透传）；全量绿 |
 | `（本轮）` | **mypy 增量门禁接入 CI**：新增 step `mypy --ignore-missing-imports --follow-imports=silent research_engine/runtime research_engine/search/replay.py web/backend/api`；dev 依赖加 `mypy>=1.10` 并用 `uv pip compile` 重生成 lock（mypy 2.4.1） | 本机 `mypy ... → Success: no issues found in 6 source files`；CI YAML `yaml.safe_load` 通过 |
@@ -111,7 +112,7 @@ git checkout dev -- icon-lab ppt-report
 |---|--------|------|------|------|
 | 1 | 阶段 0 止血：eval 并发共享 graph / HITL 计账 / 压缩静默 / coverage fail-open，各带回归 | ✅ 完成 | `test_eval_per_run_isolation`(3) / `test_hitl_token_accounting`(4) / `test_context_compression`(+2) / `test_audit_p1_remediation`(+1) | — |
 | 2 | 阶段 1：figures 自动生成 + CI 守卫；评测确定性/独立裁判脚手架；陈旧数字清理 | ✅ 完成 | `tools/gen_figures.py --check` exit 0（CI step）；`search/replay.py` + `test_search_replay`(14)；`JudgeWithLedger` + `test_eval_judge_scaffold`(9)；README/figures 数字由生成物校验 | — |
-| 3 | 阶段 2：RunContext / per-run 隔离 / 节点纯函数化切片 / 消除类级计数器与 contextvar 隐式依赖 | ⚠️ 大部分 | ADR-0019/0020；`runtime/`（RunContext + TokenLedger + 注册表）；类级计数器已删除；RAG 作用域与运行档位显式注入（`test_rag_scope` +3、`test_profile_injection` 4）；全量测试绿 | **`usage` 逐调用记账仍用 contextvar**（emit 点不携带 run_id，需把 run_id 穿透搜索/RAG 调用链）；**节点仍是方法**（依赖注入已集中，但未拆成纯函数模块） |
+| 3 | 阶段 2：RunContext / per-run 隔离 / 节点纯函数化切片 / 消除类级计数器与 contextvar 隐式依赖 | ⚠️ 大部分 | ADR-0019/0020；`runtime/`（RunContext + TokenLedger + 注册表）；类级计数器已删除；RAG 作用域与运行档位显式注入；**usage sink 显式注册表已就位**（LLM emit 带 run_id，runner/worker 注册）；全量测试绿 | **搜索/RAG 的 emit 点仍未携 run_id**（当前回退 contextvar 兜底，需把 run_id 穿透检索调用链）；**节点仍是方法**（依赖注入已集中，未拆纯函数模块） |
 | 4 | 阶段 4：CI 质量门禁与仓库卫生（非产品目录移出、文档结构收敛） | ⚠️ 大部分 | coverage ≥73%（实测 75.01%）、mypy 增量（6 files Success）、`security-windows` job；icon-lab/ppt-report 移出跟踪；`docs/status/current.md` 单页 + project-status 归档 | **pip-audit CI 门禁**：工具可用并完成巡检（soupsieve 已修），但 `-r requirements-lock.txt` 需稳定 PyPI 解析，本机网络未取得稳定验证；npm devDeps 审计未做 |
 | 5 | 阶段 5：README 重写与完成情况报告 | ✅ 完成 | README 531→约 190 行（诚实评测口径/边界）；本报告 + ADR-0019/0020 + CHANGELOG | — |
 
@@ -127,7 +128,7 @@ git checkout dev -- icon-lab ppt-report
 
 ```text
 py -3.13 -m pytest tests/ --tb=no
-→ 1484 passed, 81 skipped, 6 warnings
+→ 1490 passed, 81 skipped, 6 warnings
 
 py -3.13 -m mypy research_engine/runtime research_engine/search/replay.py web/backend/api --ignore-missing-imports --follow-imports=silent
 → Success: no issues found in 6 source files
