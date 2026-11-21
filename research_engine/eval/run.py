@@ -108,10 +108,20 @@ def _run_one(
     row: Dict[str, Any],
     meta: Dict[str, Any],
     run_dir: Path,
-    graph,
+    graph=None,
     prov: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """单条 Graph 运行：返回 (invoke_status, raw_dict)。异常重试 1 次（Q4 三档）。
+
+    **per-run 图实例（2026-11 修复）**：`graph` 缺省为 ``None`` 时，本函数在**当前线程内**
+    用 :func:`create_graph` 新建一份图/Agent 实例。
+
+    为什么必须 per-run：``DeepResearchGraph`` 的 Agent 持有实例可变状态
+    （``Validator.last_validation_stats``、各 Agent 的 degradation 缓冲等），
+    旧实现把**同一个 graph 实例**交给 ``ThreadPoolExecutor`` 的 3 个线程共享
+    ⇒ 同一轮 run 的验证统计/降级记录会被其它题串台，污染评测证据本身。
+
+    `graph` 仍接受显式实例（单测/外部调用兼容）；生产评测路径传 ``None``。
 
     成本归因：类级计数器在并发下是全局累计，单条落盘快照会互相污染——
     因此单条成本用 state.token_used（该 run 自己的硬闸计数），
@@ -124,13 +134,15 @@ def _run_one(
     q_id = row["id"]
     topic = row["query"]
     p = prov or run_provenance()
+    # 每个并发槽位（线程）一份图实例：Agent 的实例状态不再跨 run 共享。
+    run_graph = graph if graph is not None else create_graph()
     attempt = 0
     last_err: Optional[str] = None
     while attempt <= 1:
         try:
             t0 = time.time()
             # eval 环境禁止观测导出干扰（fail-silent 主路径不受影响，trace 归 CLI/Web；需求 33 起为 OTel）
-            state = graph.run(topic, thread_id=f"eval-{q_id}-{uuid.uuid4().hex[:6]}")
+            state = run_graph.run(topic, thread_id=f"eval-{q_id}-{uuid.uuid4().hex[:6]}")
             raw = {
                 "q_id": q_id,
                 "query": topic,
@@ -186,14 +198,16 @@ def phase1(dataset: Dict[str, Any], run_dir: Path, concurrency: int) -> None:
     if pending:
         print(f"Phase 1: {len(pending)} 条待跑（并发 {concurrency}，已跳过 {len(rows) - len(pending)} 条）")
         LLMClient.reset_stats()  # Q2/Q8：研究成本隔离（Phase 1 桶快照进 raw）
-        graph = create_graph()
+        # 2026-11 修复（并发串台）：**不再**在进程级建一份共享 graph 再交给线程池。
+        # graph 由 _run_one 在每个线程内按需新建（per-run 实例），否则 Agent 的实例
+        # 可变状态（validate 统计 / 降级缓冲）会在并发题之间互相串台。
         # W8 §10.4：整轮 run 只抓一次 provenance（跑批时刻的 git + config），按条目复用
         prov = run_provenance()
         done_ok = done_failed = 0
         timeout_ids: List[str] = []
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = {
-                pool.submit(_run_one, row, meta, run_dir, graph, prov): row["id"]
+                pool.submit(_run_one, row, meta, run_dir, None, prov): row["id"]
                 for row in pending
             }
             for fut in futures:
