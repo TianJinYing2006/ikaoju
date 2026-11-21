@@ -72,7 +72,7 @@
 2. **后端拆分**：`web/backend/main.py` 3,846 行、66 个路由，与 `store`/`manager` 等模块级单例深度耦合；
    一次机械搬移的回归面不可控。建议按域分 6 个 PR（auth → runs/stream → rag → export/share → ops/meta → worker/runner），
    每 PR 先建 `web/backend/api/<domain>.py` 薄 router，再加契约测试。
-3. **覆盖率/类型/依赖扫描**：coverage 门禁（73%）、Windows 安全 job、**mypy 增量门禁**（runtime/replay/api，本机 Success）已接入；**pip-audit 仍被网络阻断**：advisory DB 请求超时、`-r lock` 解析 grpcio 失败——无本地验证不加。待网络稳定后补 pip-audit 并制定存量告警策略。
+3. **覆盖率/类型/依赖扫描**：coverage 门禁（73%）、Windows 安全 job、**mypy 增量门禁**（runtime/replay/api，本机 Success）已接入；**pip-audit 巡检已执行**（`.deps` 3 组告警：pypdf/urllib3 在 lock 已修复、soupsieve 已升 4.1.3），CI 门禁待稳定网络下的锁文件审计。npm devDeps 审计未做。
 4. **截图/录屏**：需要 `npm ci && npm run build` 后用 Playwright 截 4 个真实页面；本晚优先保证代码与测试，
    该产物留待有浏览器环境时补。
 5. **Windows 沙箱测试进 CI**：GitHub-hosted runner 有 windows-latest，但当前 workflow 未配置；
@@ -103,21 +103,48 @@ git revert 7b11af2
 git checkout dev -- icon-lab ppt-report
 ```
 
-## 6. 本批次已验证的证据
+## 6. 目标逐项完成状态（2026-11-22 最终核验）
+
+> 对照本轮 goal 的 5 项交付要求逐项核验；「证据」均为本机可复跑命令。
+
+| # | 目标项 | 状态 | 证据 | 残差 |
+|---|--------|------|------|------|
+| 1 | 阶段 0 止血：eval 并发共享 graph / HITL 计账 / 压缩静默 / coverage fail-open，各带回归 | ✅ 完成 | `test_eval_per_run_isolation`(3) / `test_hitl_token_accounting`(4) / `test_context_compression`(+2) / `test_audit_p1_remediation`(+1) | — |
+| 2 | 阶段 1：figures 自动生成 + CI 守卫；评测确定性/独立裁判脚手架；陈旧数字清理 | ✅ 完成 | `tools/gen_figures.py --check` exit 0（CI step）；`search/replay.py` + `test_search_replay`(14)；`JudgeWithLedger` + `test_eval_judge_scaffold`(9)；README/figures 数字由生成物校验 | — |
+| 3 | 阶段 2：RunContext / per-run 隔离 / 节点纯函数化切片 / 消除类级计数器与 contextvar 隐式依赖 | ⚠️ 大部分 | ADR-0019/0020；`runtime/`（RunContext + TokenLedger + 注册表）；类级计数器已删除；RAG 作用域与运行档位显式注入（`test_rag_scope` +3、`test_profile_injection` 4）；全量测试绿 | **`usage` 逐调用记账仍用 contextvar**（emit 点不携带 run_id，需把 run_id 穿透搜索/RAG 调用链）；**节点仍是方法**（依赖注入已集中，但未拆成纯函数模块） |
+| 4 | 阶段 4：CI 质量门禁与仓库卫生（非产品目录移出、文档结构收敛） | ⚠️ 大部分 | coverage ≥73%（实测 75.01%）、mypy 增量（6 files Success）、`security-windows` job；icon-lab/ppt-report 移出跟踪；`docs/status/current.md` 单页 + project-status 归档 | **pip-audit CI 门禁**：工具可用并完成巡检（soupsieve 已修），但 `-r requirements-lock.txt` 需稳定 PyPI 解析，本机网络未取得稳定验证；npm devDeps 审计未做 |
+| 5 | 阶段 5：README 重写与完成情况报告 | ✅ 完成 | README 531→约 190 行（诚实评测口径/边界）；本报告 + ADR-0019/0020 + CHANGELOG | — |
+
+**结论**：5 项中 3 项完全完成、2 项主体完成。剩余均为**已定位、可继续**的收尾项，不涉及回滚风险；当前分支全量测试与守卫全绿，可随时合并或继续迭代。
+
+### 剩余项的执行建议
+
+1. **usage contextvar 显式化**：给 `Researcher._search_*` / `RAG` 调用链补 `run_id` 参数（来源 `state.run_id`），`emit_usage(record, run_id=...)` 走注册表；runner/worker 用 `register_usage_sink(run_id, sink)` 替代 push/pop（保留 `use_usage_sink` 兼容单测）。
+2. **pip-audit CI 门禁**：网络稳定后先 `pip-audit -r requirements-lock.txt` 取得一次绿，再加进 `lint-and-test`（或独立 job），对存量告警建立 ignore 清单并标注理由。
+3. **后端按域拆分**（计划中的后续批次，不属本次 objective）：先 `auth` → `runs/stream` → `rag` → `export/share` → `ops/meta`，每 PR 带契约测试。
+
+## 7. 本批次已验证的证据
 
 ```text
 py -3.13 -m pytest tests/ --tb=no
-→ 1446 passed, 81 skipped, 6 warnings
+→ 1484 passed, 81 skipped, 6 warnings
+
+py -3.13 -m mypy research_engine/runtime research_engine/search/replay.py web/backend/api --ignore-missing-imports --follow-imports=silent
+→ Success: no issues found in 6 source files
 
 py -3.13 tools/check_doc_consistency.py
 → 6 项 [OK]（figures tag / ICP / CI 守卫清单 / 开放注册口径 / ADR 索引 / README 数字 == figures）
 
 py -3.13 tools/gen_figures.py --check
-→ 结构事实全部 [OK]（ADR 19 / 需求 45 / 迁移 31+31 / 测试文件 161 / Python 文件与行数以 figures 为准 / 守卫 6）
+→ 结构事实全部 [OK]（ADR 20 / 需求 45 / 迁移 31+31 / 测试文件 162 / Python 文件数与行数以 figures 为准 / 守卫 6）
 
 py -3.13 -m pytest tests/ --tb=no -q --cov=research_engine --cov=web --cov-fail-under=73
-→ 1479 passed, 81 skipped；coverage 75.01%，Required test coverage of 73% reached
+→ coverage 75.01%，Required test coverage of 73% reached
 
 Windows 本机：py -3.13 -m pytest tests/test_code_exec.py tests/test_arm2_code_injection.py -q
 → 29 + 39 passed（对应 CI security-windows job）
+
+py -3.13 -m pip_audit --path .deps
+→ 3 组告警（pypdf / urllib3 在 lock 已修复；soupsieve 已升级 4.1.3）
+```
 ```
