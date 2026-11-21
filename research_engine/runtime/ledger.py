@@ -104,3 +104,32 @@ def unregister_ledger(run_id: str) -> None:
     """run 结束时注销（防止注册表随 run 数增长）。"""
     with _REGISTRY_LOCK:
         _ACTIVE.pop(run_id, None)
+
+
+def merge_snapshots(snapshots: list[Optional[Dict[str, Any]]]) -> Dict[str, Any]:
+    """把多条 run 账本快照合并成整轮汇总（评测 Phase 1 全局成本用）。
+
+    形状与旧 ``phase1_global_stats.json`` 对齐：``tokens_total`` / ``model_stats`` /
+    ``role_stats`` / ``model_io_stats``，另加 ``source`` 标记数据来源（账本 vs 旧类级桶），
+    下游按旧字段读取时无需改动。
+    """
+    merged: Dict[str, Any] = {
+        "tokens_total": 0,
+        "model_stats": {},
+        "role_stats": {},
+        "model_io_stats": {},
+        "source": "per_run_ledger",
+    }
+    for snap in snapshots:
+        if not isinstance(snap, dict):
+            continue
+        merged["tokens_total"] += int(snap.get("total", 0) or 0)
+        for model, tokens in (snap.get("by_model") or {}).items():
+            merged["model_stats"][model] = merged["model_stats"].get(model, 0) + int(tokens)
+        for role, tokens in (snap.get("by_role") or {}).items():
+            merged["role_stats"][role] = merged["role_stats"].get(role, 0) + int(tokens)
+        for model, io in (snap.get("by_model_io") or {}).items():
+            slot = merged["model_io_stats"].setdefault(model, {"input": 0, "output": 0})
+            slot["input"] += int((io or {}).get("input", 0) or 0)
+            slot["output"] += int((io or {}).get("output", 0) or 0)
+    return merged

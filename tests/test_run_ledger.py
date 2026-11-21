@@ -104,6 +104,28 @@ def test_ledgers_are_isolated_between_runs():
         unregister_ledger("run-b")
 
 
+def test_merge_snapshots_sums_runs():
+    """评测 Phase 1 全局成本：逐 run 账本快照合并（替代类级桶）。"""
+    from research_engine.runtime import merge_snapshots
+
+    a, b = TokenLedger(), TokenLedger()
+    a.add(model="qwen-plus", role="critic", input_tokens=80, output_tokens=20, total_tokens=100)
+    b.add(model="qwen-turbo", role="smart", input_tokens=10, output_tokens=5, total_tokens=15)
+    merged = merge_snapshots([a.snapshot(), None, b.snapshot()])
+    assert merged["tokens_total"] == 115
+    assert merged["model_stats"] == {"qwen-plus": 100, "qwen-turbo": 15}
+    assert merged["model_io_stats"]["qwen-plus"] == {"input": 80, "output": 20}
+    assert merged["source"] == "per_run_ledger"
+
+
+def test_merge_snapshots_empty():
+    from research_engine.runtime import merge_snapshots
+
+    merged = merge_snapshots([])
+    assert merged["tokens_total"] == 0
+    assert merged["model_stats"] == {}
+
+
 def test_llm_client_without_registered_ledger_does_not_crash():
     """未注册账本（评测裁判 / 旧调用 / 恢复后的新进程）时照旧记账，不得抛错。"""
     state = ResearchState(topic="t", run_id="")

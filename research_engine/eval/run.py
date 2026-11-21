@@ -54,6 +54,7 @@ from research_engine.eval.status_keys import (
 )
 from research_engine.graph import create_graph
 from research_engine.llm.client import LLMClient
+from research_engine.runtime import merge_snapshots
 
 DEFAULT_DATASET = Path(__file__).resolve().parent / "dataset.jsonl"
 DEFAULT_CONCURRENCY = 3  # Q4：并发 3（ThreadPoolExecutor，不引 asyncio）
@@ -150,6 +151,8 @@ def _run_one(
                 "type": row.get("type", ""),
                 "state": state.model_dump(),
                 "token_used": state.token_used,  # 单条成本 = 该 run 自身硬闸计数（validator 漏计由全局差值补）
+                # 2026-11：run 级账本快照（评测全局成本改由它汇总，不再依赖类级全局计数器）
+                "token_ledger": getattr(run_graph, "last_ledger", None),
                 # W8 §10.4 + Arm 6：provenance 字段集中由 raw_provenance_fields 带出，
                 # 三条落盘路径（ok / failed / timeout）共用 ⇒ 新增字段不会漏抄某一条。
                 # 内嵌的是**同一份** config_snapshot 对象（不是手抄副本）
@@ -205,6 +208,7 @@ def phase1(dataset: Dict[str, Any], run_dir: Path, concurrency: int) -> None:
         prov = run_provenance()
         done_ok = done_failed = 0
         timeout_ids: List[str] = []
+        ledgers: List[Optional[Dict[str, Any]]] = []
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = {
                 pool.submit(_run_one, row, meta, run_dir, None, prov): row["id"]
@@ -231,6 +235,7 @@ def phase1(dataset: Dict[str, Any], run_dir: Path, concurrency: int) -> None:
                     (raw_dir / f"{res['raw']['q_id']}.raw.json").write_text(
                         json.dumps(res["raw"], ensure_ascii=False, indent=1), encoding="utf-8"
                     )
+                    ledgers.append(res["raw"].get("token_ledger"))
                     done_ok += 1
                     if res["raw"][INVOKE_STATUS] != "done":
                         done_failed += 1
@@ -239,12 +244,17 @@ def phase1(dataset: Dict[str, Any], run_dir: Path, concurrency: int) -> None:
                         json.dumps(res["raw"], ensure_ascii=False, indent=1), encoding="utf-8"
                     )
                     done_failed += 1
-        # 成本归因（Q2）：并发下单条快照互相污染 → 全局研究成本统一在 Phase1 收尾抓类级桶
-        global_stats = {
-            "model_stats": dict(LLMClient.model_stats),
-            "role_stats": dict(LLMClient.role_stats),
-            "model_io_stats": {k: dict(v) for k, v in LLMClient.model_io_stats.items()},
-        }
+        # 成本归因（2026-11）：优先用每 run 的 TokenLedger 快照汇总（并发安全、无全局计数污染）；
+        # 测试替身 graph 没有账本 ⇒ 回退旧的类级桶快照（标记 source 便于排查）。
+        if any(isinstance(item, dict) for item in ledgers):
+            global_stats = merge_snapshots(ledgers)
+        else:
+            global_stats = {
+                "model_stats": dict(LLMClient.model_stats),
+                "role_stats": dict(LLMClient.role_stats),
+                "model_io_stats": {k: dict(v) for k, v in LLMClient.model_io_stats.items()},
+                "source": "class_counters_legacy",
+            }
         (run_dir / "phase1_global_stats.json").write_text(
             json.dumps(global_stats, ensure_ascii=False, indent=1), encoding="utf-8"
         )
