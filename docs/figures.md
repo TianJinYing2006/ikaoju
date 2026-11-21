@@ -12,7 +12,7 @@
 
 | 指标 | 当前值 | 口径 / 定义 | 采集命令或来源 | 日期 |
 | --- | --- | --- | --- | --- |
-| 提交总数 | 363 | 当前分支（dev）历史提交数 | `git rev-list --count HEAD` | 2026-10-27 |
+| 提交总数 | 动态（本表不固化） | 当前分支历史提交数 | `git rev-list --count HEAD` | 2026-11-22 |
 | dev 领先 master | 0 | master 与 dev 已同步（`v0.2.0` 已合入 master） | `git rev-list --count master..HEAD` | 2026-10-27 |
 | 版本 tag | v0.1.0 / v0.2.0 | 2 个 tag；`v0.2.0` = 2026-10-26 里程碑发布 | `git tag` | 2026-10-27 |
 | 需求文档 | 45 篇 + 1 模板 | `docs/requirements/*.md`，排除 `模板.md` | 目录计数 | 2026-11-03 |
@@ -24,19 +24,19 @@
 
 | 指标 | 当前值 | 口径 / 定义 | 采集命令或来源 | 日期 |
 | --- | --- | --- | --- | --- |
-| 引擎代码 | 13,492 行 | `research_engine/**/*.py`，非空行（`Get-Content \| Measure-Object -Line`，含注释） | `Get-Content \| Measure-Object -Line` | 2026-10-26 |
-| 后端代码 | 13,106 行 | `web/backend/**/*.py`，同上 | 同上 | 2026-10-26 |
-| 测试代码 | 20,758 行 | `tests/**/*.py`，同上 | 同上 | 2026-10-26 |
-| 前端源码 | 8,429 行 | `web/frontend/src/**/*.{ts,tsx}`，同上 | 同上 | 2026-10-26 |
-| E2E 代码 | 1,898 行 | `web/frontend/e2e/**/*.ts`，同上 | 同上 | 2026-10-26 |
-| 测试文件 | 158 个 | `tests/*.py` | 目录计数 | 2026-11-03 |
+| 引擎代码 | 14,010 行 | `research_engine/**/*.py`，非空行（`ReadAllLines` 过滤空行，含注释） | 见 `tools/gen_figures.py` 同口径脚本 | 2026-11-22 |
+| 后端代码 | 14,003 行 | `web/backend/**/*.py`，同上 | 同上 | 2026-11-22 |
+| 测试代码 | 24,052 行 | `tests/**/*.py`，同上 | 同上 | 2026-11-22 |
+| 前端源码 | 9,112 行 | `web/frontend/src/**/*.{ts,tsx}`，同上 | 同上 | 2026-11-22 |
+| E2E 代码 | 1,957 行 | `web/frontend/e2e/**/*.ts`，同上 | 同上 | 2026-11-22 |
+| 测试文件 | 158 个 | `tests/*.py` | 目录计数（`tools/gen_figures.py --check` 校验） | 2026-11-22 |
 
 ## 3. 测试与 CI
 
 | 指标 | 当前值 | 口径 / 定义 | 采集命令或来源 | 日期 |
 | --- | --- | --- | --- | --- |
-| pytest 收集/执行 | **1477** 项 | 全量 `tests/`；`pytest --collect-only -q`（收集统计） | `pytest tests/ --collect-only -q` | 2026-11-03 |
-| 零依赖 lane（本机） | **1477 收集 / 1392 通过 / 81 跳过 / 5 失败** | 2026-11-03 本机复验（临时目录可写）；5 个失败 = `.deps` 与 lock 漂移导致的 OTel 用例，**以 CI 三版本矩阵为准** | `py -3.13 -m pytest tests/ -q` | 2026-11-03 |
+| pytest 收集/执行 | **1527** 项 | 全量 `tests/`；`pytest --collect-only`（收集统计） | `py -3.13 -m pytest tests/ --collect-only` | 2026-11-22 |
+| 零依赖 lane（本机） | **1527 收集 / 1446 通过 / 81 跳过 / 0 失败** | 2026-11-22 本机复验（Python 3.13 + `.deps`）；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 | `py -3.13 -m pytest tests/ --tb=no` | 2026-11-22 |
 | 跳过项性质 | 真实 PG/Redis 集成用例 | 由 CI `infra` job 通过 `DR_TEST_DATABASE_URL` / `DR_TEST_REDIS_URL` 强制执行 | `tests/conftest.py` | 2026-10-26 |
 | CI job 数 | 4 个定义 / **6 项检查** | lint-and-test（3.11/3.12/3.13 矩阵）+ infra + frontend + e2e | `.github/workflows/ci.yml` | 2026-10-26 |
 | CI 守卫 | 6 个 | 评测产物白名单 / 前端边界 / 公开仓 IP / 文档漂移 / Tailwind token / UI 反模式 | `tools/check_*.py` | 2026-10-27 |

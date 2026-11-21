@@ -89,6 +89,13 @@ ppt-report/
 # 本地临时工作区（一次性脚本/草稿）
 .tmp/
 
+# 本地非仓库材料（课程交付材料 / 面试材料 / 第三方 skill 副本）：
+# 这些目录含本地 .py 工具，但不属于仓库；加入忽略可让本机 `ruff check .`
+# 与 CI 同口径（ruff 默认 respect-gitignore）。
+课程作业交付/
+面试准备/
+taste-skill/
+
 # 第三方审计 skills（前端重构辅助，来源见 docs/web-frontend-audit.md）：
 # 部分上游仓库未声明 LICENSE ⇒ 只在本机使用，不随公开仓库分发
 .opencode/skills/

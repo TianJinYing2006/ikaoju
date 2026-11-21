@@ -1,0 +1,104 @@
+# 2026-11 重构批次执行报告
+
+> 生成时间：2026-11-22（本地执行，未推送远端）
+> 分支：`plan/2026-11-refactor`（基于 `dev@ff6f728`）
+> 关联：2026-11 审阅意见中的「阶段 0~5」计划；ADR-0019。
+
+## 0. 一句话结论
+
+**阶段 0（止血）全部完成；阶段 1 的 figures 自动校验完成、评测 v2 只完成了隔离基础；阶段 2 完成了 RunContext / 节点写回 / 评测并发隔离这三个高风险核心，完整 ports 化与 contextvar 去除未做；阶段 3 后端拆分未做（只做了三处安全加固）；阶段 4 只完成了仓库卫生与 figures 守卫；阶段 5 完成 README 重写与本报告。** 计划中依赖外部条件（API key 跑评测、真实浏览器截图/录屏、GitHub runner 验证、生产部署权限）的项未完成，均如实登记在 §3。
+
+全量测试：**1527 收集 / 1446 通过 / 81 跳过 / 0 失败**（Python 3.13 + `.deps`，2026-11-22 本机）。
+6 个仓库守卫 + `tools/gen_figures.py --check` 全部通过。
+
+## 1. 已完成项（按提交）
+
+| 提交 | 内容 | 验收 |
+| --- | --- | --- |
+| `25d86a4` | **eval 并发隔离**：`_run_one(graph=None)` 在每个运行线程内新建图实例，Phase 1 不再共享同一 graph/Agent 状态 | `tests/test_eval_per_run_isolation.py`（3 例，含并发实例-线程一一对应断言） |
+| `cbd2598` | **HITL token 计账**：`_clarify` / `_revise_plan` 写回 `token_used`，预算硬闸对 HITL 路径可见 | `tests/test_hitl_token_accounting.py`（4 例） |
+| `db2a454` | **压缩降级可归因**：`ContextManager.compress` 失败进 `DegradationSink`，`_write` 节点 drain 进 `state.degradation_log`，不再静默 success | `tests/test_context_compression.py` 新增 2 例（含 graph 级） |
+| `1cd15f1` | **validator fail-open 修复**：无事实句时 `citation_coverage = None`（原 `1.0`）；消费方已按 None 处理 | `tests/test_audit_p1_remediation.py` 新增 1 例 |
+| `f5f939e` | **引擎架构收敛**：新增 `research_engine/runtime/`（`RunContext` + `new_run_context` + `with_token_writeback`）；12 个节点统一套写回装饰器并删除逐节点手写；`run()/iter_run()` 经 RunContext 归一取消谓词 | `tests/test_run_context.py`（12 例，含「全部生产节点已装饰」结构断言） |
+| `a6d34d2` | **figures 机器校验**：`tools/gen_figures.py`（`--write/--check`，两层：live→JSON 新鲜度、JSON→figures.md 一致性）+ CI step | `tests/test_gen_figures.py`（22 例）；`--check` exit 0 |
+| `8cc3f14` | figures 结构事实快照（`docs/figures.generated.json`） | `--check` 全 OK |
+| `90ebc09` | **后端加固**：① `retry_run` 复用 `_check_input_safety`（审核/注入/空主题，此前绕过）② `_audit` 失败写 ERROR 日志（不再静默丢审计）③ Passkey 在 staging/production 未显式配置时 fail-closed（原 localhost 默认值导致 `enabled()` 恒真） | `tests/test_runs_management_api.py` +2；`tests/test_passkeys.py` +3 |
+| `17f3c6b` | **ADR-0019**：RunContext / 节点写回 / per-run 隔离的背景、方案、取舍、影响；figures ADR 计数 18→19 | `check_doc_consistency` ADR 索引 OK |
+| `7b11af2` | **仓库卫生**：`icon-lab/`（44 文件）、`ppt-report/`（33 文件）移出 git 跟踪（本地文件保留），`.tmp/` 忽略 | `gen_figures --check`；`git status` 干净（除用户本地未跟踪目录） |
+| （本报告） | 文档：README 重写、执行报告 | `check_doc_consistency` 6/6 OK |
+
+另外：
+
+- **README 重写**：从 531 行收敛为约 190 行；明确「是什么/不是什么」、三个核心设计、可复现的评测诚实口径
+  （43.3% / 52.2% / 78.3% / 85.4% 四个口径并列、不可比较）、已知边界、文档地图；
+  「单元测试 / E2E」数字保持与 figures 机器一致。
+- **文档数字校正**：figures 的代码规模、pytest 收集、ADR 计数更新到今天实测口径（采集命令、日期一并更新）。
+
+## 2. 计划 vs 实际（差异表）
+
+| 计划项 | 状态 | 说明 |
+| --- | --- | --- |
+| 阶段 0：4 个矛盾缺口修复 + 回归测试 | ✅ 完成 | 4/4，均带回归测试 |
+| 阶段 0：README/文档数字校正 | ✅ 完成 | README 重写 + figures 回填 |
+| 阶段 1：figures 自动生成 + CI 守卫 | ✅ 完成 | 两层校验；结构事实（ADR/迁移/需求/测试文件/守卫清单/代码规模）机器校验 |
+| 阶段 1：评测 v2（固定证据池回放、跨模型族独立裁判、人工抽检、RAG 评测集） | ⚠️ 未完成 | 需要真实 API key 与评测预算；本机无法产出可信新基线。仅完成并发隔离（评测数据可信度的前置）。方案已写入 ADR-0019 §方案 4 与本报告 §4 |
+| 阶段 2：RunContext / per-run 隔离 / 节点写回 / 消除类级计数与 contextvar | ⚠️ 部分 | RunContext + 写回 + per-run 已完成；**类级 LLM 计数与 contextvar 仍是现状**（全仓 300+ 调用点，拆改需逐模块回归，超出单晚安全范围） |
+| 阶段 3：后端拆分（app factory + routers + services + repositories） | ❌ 未做 | 只完成三处安全加固。`main.py` 仍 3800+ 行；拆分方案与顺序见 §4；风险：66 路由与模块级单例深度耦合，单晚机械搬移会破坏 1500+ 测试覆盖 |
+| 阶段 4：coverage / mypy / pip-audit / Windows job / npm devDeps | ❌ 未做 | 需先本地安装并跑通工具（`.deps` 未含 pytest-cov/mypy），否则加进 CI 是不负责任的「红门禁」；登记为下一步 |
+| 阶段 4：icon-lab / ppt-report 移出、github 元数据 | ⚠️ 部分 | 仓库卫生完成；GitHub description/homepage 需远端权限，未改 |
+| 阶段 5：README 重写 + 截图 + 90s demo | ⚠️ 部分 | README 完成；截图/录屏未做（需构建前端 + 真实浏览器会话，未在本晚执行；`DR_DEMO=1` 路径可复现） |
+| 发布 v0.3.0 / 合并 dev / 推送 | ❌ 未做 | 明确不推送、不合入（遵守仓库「禁止直推 dev」纪律，且需人工 review） |
+
+## 3. 未完成项与原因（如实登记）
+
+1. **评测 v2**：需要调用外部模型产生真实数据；本机无 API key，且仓库纪律要求「先冻结代码/配置/数据集再跑基线」。
+   强行用假数据产出「新基线」会污染 figures 的可信度，因此不做。
+2. **后端拆分**：`web/backend/main.py` 3,846 行、66 个路由，与 `store`/`manager` 等模块级单例深度耦合；
+   一次机械搬移的回归面不可控。建议按域分 6 个 PR（auth → runs/stream → rag → export/share → ops/meta → worker/runner），
+   每 PR 先建 `web/backend/api/<domain>.py` 薄 router，再加契约测试。
+3. **覆盖率/类型/依赖扫描**：需先安装并清理存量告警（mypy 对 6.8 万行全量必然大面积报错），
+   建议先加 **coverage（门槛 70% 起）+ pip-audit**，mypy 只对新增 `research_engine/runtime/` 与 `web/backend/api/` 生效。
+4. **截图/录屏**：需要 `npm ci && npm run build` 后用 Playwright 截 4 个真实页面；本晚优先保证代码与测试，
+   该产物留待有浏览器环境时补。
+5. **Windows 沙箱测试进 CI**：GitHub-hosted runner 有 windows-latest，但当前 workflow 未配置；
+   加入需新建 job 并验证 15 分钟内完成。
+
+## 4. 下一步建议（按投入产出）
+
+1. **补评测 v2**（1~2 天，需 API key）：固定证据池回放 + 跨模型族裁判 + 50 条人工标注 + RAG 20 题集；
+   重采一次基线后，把 figures 的「引用准确率」从多口径并列改为「当前口径 + 区间」。
+2. **后端拆分**（1~2 周）：按 §3.2 的 6 个 PR 顺序；先抽 `web/backend/api/meta.py`（legal/help/feedback，无状态耦合）做样板。
+3. **补 CI 质量门禁**（半天~1 天）：coverage + pip-audit + Windows job；mypy 增量。
+4. **呈现补齐**（半天）：4 张截图 + 90 秒 demo；GitHub description/homepage。
+5. **剩余 contextvar/类级计数收敛**（2~3 天）：在每个域拆分 PR 中顺带改为显式依赖，不做一次性大爆炸。
+
+## 5. 合并 / 回滚方式
+
+```bash
+# 查看本批次
+git log --oneline dev..plan/2026-11-refactor
+git diff --stat dev..plan/2026-11-refactor
+
+# 合并（按仓库纪律应先 PR + 人工 review；本地验证后可 fast-forward）
+git checkout dev && git merge --ff-only plan/2026-11-refactor
+
+# 回滚任一批次（示例：撤销仓库卫生提交）
+git revert 7b11af2
+# 恢复 icon-lab/ppt-report 跟踪（文件仍在本地）：
+git checkout dev -- icon-lab ppt-report
+```
+
+## 6. 本批次已验证的证据
+
+```text
+py -3.13 -m pytest tests/ --tb=no
+→ 1446 passed, 81 skipped, 6 warnings
+
+py -3.13 tools/check_doc_consistency.py
+→ 6 项 [OK]（figures tag / ICP / CI 守卫清单 / 开放注册口径 / ADR 索引 / README 数字 == figures）
+
+py -3.13 tools/gen_figures.py --check
+→ 结构事实全部 [OK]（ADR 19 / 需求 45 / 迁移 31+31 / 测试文件 158 / Python 315 文件 68,426 行 / 守卫 6）
+
+py -3.13 -m ruff check .（提交前逐文件执行；本报告生成后最终全量复跑见下）
+```

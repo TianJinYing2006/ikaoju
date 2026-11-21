@@ -1,531 +1,168 @@
-# 爱考据 iKaoju — 深度研究 Agent
+# 爱考据 iKaoju — 可审计的深度研究 Agent
 
-[![CI](https://img.shields.io/github/actions/workflow/status/TianJinYing2006/DeepResearch/ci.yml?branch=dev&label=CI&logo=github)](https://github.com/TianJinYing2006/DeepResearch/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/TianJinYing2006/ikaoju/ci.yml?branch=dev&label=CI&logo=github)](https://github.com/TianJinYing2006/ikaoju/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue)
 
-> **GitHub 为权威源**；Gitee 仅作国内访问镜像（可能滞后）：[gitee.com/tian-jinying/DeepResearch](https://gitee.com/tian-jinying/DeepResearch)
+> 输入一个研究主题：**规划 → 多跳检索（Web + 私有 RAG + arXiv）→ Critic 裁决 → 带引用报告 → 引用校验与证据链分级**。
+> 线上受控内测：<https://ikaoju.cn>（需注册；无 SLA 承诺）。GitHub 为权威源，Gitee 仅镜像。
 
-基于 **LangGraph 多 Agent 编排 + 多跳检索 + RAG 多源融合 + 交叉验证防幻觉** 的深度研究系统。
+**当前状态（2026-11）**：v0.2.0 主线稳定；本分支正在进行「可审计性 + 架构收敛」重构，
+范围与进度见 [`docs/plan/2026-11-execution.md`](docs/plan/2026-11-execution.md)。
+本项目是**个人研究与工程实践项目**，不是对外产品：能力声明以「有测试/CI 证据」为限。
 
-输入一个研究主题，系统自动完成 **规划 → 多跳检索（网络 + RAG 私有知识库）→ 生成带引用报告 → 引用校验与多源印证** 的完整流程。
+---
 
-## 核心能力
+## 这个项目是什么 / 不是什么
 
-| 能力 | 说明 |
-|------|------|
-| **多 Agent 编排** | plan（分解子问题）→ research（多跳检索）→ critic（充分度裁决）→ revise（回填/重规划）→ write → validate → repair（有界返工）→ render（溯源渲染），8 节点 LangGraph 状态机驱动 |
-| **多跳检索** | 基于"信息充分度"动态判断是否继续检索；全局预算 `max_total_hops=20`，每子问题跳数上限按实际子问题数动态切分 `ceil(20 / n)`（`config.per_subq_hop_cap=5` 仅在子问题数不可得时作静态兜底） |
-| **RAG 多源融合** | 网络搜索（博查 / Tavily 可切）+ arXiv 学术检索 + 私有知识库（Qdrant 向量 + BM25 混合、RRF 融合、可选云端 rerank）**三路**证据并行召回。代码执行工具受关键词触发，但默认**不作为事实证据**（`CODE_EXEC_EVIDENCE_ENABLED=false`，理由见 §3.2） |
-| **交叉验证防幻觉** | 引用存在性校验 + 关键论断多源印证 + 置信度分级（W2：来源类型标注/失败隔离/运行溯源四桶） |
-| **证据链可回溯（需求 34）** | web 候选实抓正文落盘**内容寻址快照**（robots 遵守 + 预算三闸 15 次/5MB/90s + 熔断，失败降级不阻塞）→ 引用携带**逐字引文 + 快照内字符偏移**（代码定位 L0~L2）→ 交付自检（零模型三项）与证据链分级处置（致命 vs 可修，只标注） |
-| **三层 LLM 分级** | fast（摘要）/ smart（写作）/ strategic（规划+裁决，W4 拆 planner/critic 分档可配强推理） |
-| **全链路可观测** | OTel（OTLP）trace：每节点 span（含 critic 循环逐跳 `R{k}`）+ 每次 LLM 调用 generation（`gen_ai.*` 语义 + token/成本估算），Web/CLI 同栈导出、后端可插拔（Jaeger / 自托管 Langfuse）；Web 侧另有 OTLP/Prometheus 指标双路径（默认关）；CLI 知情打印 + trace URL 回显 |
-| **评测体系** | 两阶段管道（`--run-only` 存原文产出 / `--eval-only` 零成本复算）+ 七指标聚合 + 质量闸（`verdict` + ±stderr），入口 `research_engine/eval/run.py` |
-| **故障可归因（W8）** | 工具/provider/RAG/内部错误均有明确 `failure_reason`；`run_status`/`invoke_status`/`metrics_status` 三层状态分层，失败 run 不会伪装成成功 |
-| **可复现与产物治理（W8）** | 每轮 run 落盘配置快照、五开关生效值、`prompt_hash`（含分角色 `prompt_slots`）、`scorer_version` 与 git 修订；质量闸出 `verdict` + ±stderr；评测产物白名单 ≡ git 跟踪集合 |
-| **L3 生产能力（P1–P8）** | 账号与会话（Argon2id + httpOnly Session + CSRF 双提交）、开放注册（邮箱 + 密码）、配额三闸（月度预算 / 单用户并发 / 每日次数）与预留式结算、分布式限流（Redis 滑动窗口）、多租户 RAG 隔离、内容安全与申诉状态机、报告只读分享、用量账本、安全审计日志、对象存储（MinIO/S3）、队列模式 Worker（PostgreSQL 为派发权威） |
-| **故障与恢复** | `GET /api/metrics`（状态分布 / 成功率 / 队列积压 / 过期租约 / 月度成本）、`GET /api/ops/alerts`（阈值判定 + webhook 退避外送）、`tools/backup.sh` / `restore.sh`，CI 每次 PR 真实执行「备份 → 清库 → 恢复」演练 |
-
-## 架构
-
-```
-研究主题
-  │
-  ├─ [plan]        分解为子问题（strategic LLM）→ 每子问题 1 条种子查询入全局 frontier
-  │
-  ├─ [research]    取 frontier 队首做一跳并行检索（visited_sources 去重 + 证据身份去重）
-  │     ├─ 网络搜索（博查 / Tavily）+ arXiv 学术检索（官方 API 直连）
-  │     ├─ RAG 知识库（Qdrant 向量 + BM25 混合、RRF 融合、可选 rerank）
-  │     └─ 代码执行（受限沙箱，默认不进证据池）→ 结果池按来源轮转择优
-  │
-  ├─ [critic]      硬闸（depth / token，确定性）优先；未触发才走 LLM 结构化裁决
-  │     └─ 条件边四态：continue → research ｜ augment / revise → revise ｜ stop → write
-  │
-  ├─ [revise]      next_queries 回填 frontier 队尾（队列内去重）；
-  │                判方向跑偏则 Planner.replan 全量重分解（旧证据按显式映射重分配归属）
-  │
-  ├─ [write]       基于工作摘要层生成带引用报告（smart LLM）
-  │
-  ├─ [validate]    引用存在性 + 忠实度双层校验 + 多源印证 + 置信度分级
-  │     └─ 条件边：存在未通过论断 → [repair]（确定性移除/降格，至多 1 次）→ 回 validate
-  │
-  └─ [render]      来源类型标注 + 失败隔离附录 + 运行溯源 → END
-```
-
-## 快速开始
-
-### 1. 环境要求
-
-- Python 3.11 ~ 3.13（W8 Arm 3：不在该区间的解释器会在 import 时直接报错，见 `research_engine/__init__.py`）
-- Qdrant（本地 6333 端口，或配置远程地址）
-
-### 2. 安装依赖
-
-```bash
-python -m pip install -r requirements-lock.txt -r requirements-dev-lock.txt
-```
-
-> 请在独立虚拟环境中安装；不要用系统 Python 3.14。两份 lock 分别固定运行依赖与 pytest/ruff 开发依赖。
-
-> **本地测试两种模式（P0-3，2026-10-07；E-5 2026-10-26 修正）**：
-> 1. **零依赖单测（与 CI 同口径）**：`pytest tests/ -q` —— `tests/conftest.py` 会覆盖式清空
->    `DR_DATABASE_URL` / `DR_REDIS_URL` / `QDRANT_URL`，并把 **`.env` 来源的 `DR_TEST_*` 置空**
->    （显式环境变量与 `DR_TEST_INTEGRATION=1` 除外），不受本机 `.env` 是否配置服务影响；
-> 2. **含真实 PG/Redis 的集成 lane**：先起依赖并迁移
->    （`docker compose -f docker-compose.staging.yml up -d postgres redis qdrant` +
->    `docker compose -f docker-compose.staging.yml run --rm migrate`），再在 `.env` 配置
->    `DR_TEST_DATABASE_URL` / `DR_TEST_REDIS_URL` 并设 **`DR_TEST_INTEGRATION=1`**，重跑
->    `pytest tests/ -q` 即执行原本跳过的集成用例；CI `infra` job 直接用显式 env，不依赖此开关。
-
-### 3. 配置
-
-复制 `.env.example` 为 `.env` 并填入密钥：
-
-```bash
-cp .env.example .env
-```
-
-必填项：
-- `DASHSCOPE_API_KEY`：阿里云百炼（LLM + Embedding）
-- `BOCHA_API_KEY`：博查搜索（网络检索）
-
-可选：
-- `QDRANT_URL`：Qdrant 地址（默认 `http://127.0.0.1:6333`）
-- `FAST_MODEL` / `SMART_MODEL` / `STRATEGIC_MODEL`：三层模型（默认 qwen-turbo / qwen-plus / qwen-plus）
-- `PLANNER_MODEL` / `CRITIC_MODEL`（W4 分档）：规划与裁决各自独立模型；不设则回落 `STRATEGIC_MODEL`。演示强推理时：`PLANNER_MODEL=qwen-max`（规划只跑 1 次，成本增量 ≈ +¥0.007/run）；`CRITIC_MODEL=deepseek-r1` 注意裁决每轮 +10~30s 延迟——演示建议 `qwen-max` 够用。
-- **W7 主链路行为开关**：`CRITIC_GAP_ENABLED`、`VALIDATOR_FIXES_ENABLED`、`VALIDATOR_ASSERTIVE_FILTER_ENABLED`、`WRITER_SECTIONED_FEED_ENABLED`、`VALIDATOR_TRIM_ENABLED` 当前默认均为 `true`。它们是主链路开关，不是可忽略的实验残留；当前默认先保留；代码去留将在 W8 固定证据池、独立裁判、同预算重测后裁定，详见 `docs/w7-switch-disposition.md`。
-
-**L3 部署相关（P1–P8，全部有默认值，本地开发零配置）**：
-- `DR_ENV`：`local`（默认）/ `staging` / `production`。**staging 与 production 会 fail fast** —— 鉴权开关、Secure Cookie、显式 CORS、LLM 密钥缺失即拒绝启动；production 另拒明文 HTTP。
-- 执行模式与队列：`DR_EXECUTION_MODE`（代码默认 `inprocess`，compose 默认 `queue`）、`DR_WORKER_*`（租约 / 心跳 / 清扫 / 重试）、`DR_MAX_CONCURRENT_RUNS`、`DR_RUN_TIMEOUT_SECONDS`。
-- 账号：`DR_AUTH_REQUIRED`（代码默认 `false`，compose `true`）、`DR_SESSION_TTL_SECONDS` / `DR_SESSION_IDLE_SECONDS`；邮件通道见 `DR_SMTP_*` / `DR_MAIL_BASE_URL`。
-- 配额与限流：`DR_RUN_BUDGET_CNY`（¥1.50）、`DR_MONTHLY_BUDGET_CNY`（¥1,500）、`DR_DAILY_RUNS_PER_USER`、`DR_MAX_USER_CONCURRENT`、`DR_TRUSTED_PROXY_CIDRS` / `DR_PROXY_HOPS`。
-- 数据面：`DR_DATABASE_URL` / `DR_REDIS_URL`、`DR_PG_*`（连接池 / `statement_timeout` / 慢查询阈值）、`DR_S3_*`（MinIO/对象存储，未配置回落 PG）、`DR_RETENTION_*`（事件 30d / 任务 90d / 用量·审核·审计 180d）。
-- 内容安全与运维：`DR_MODERATION_PROVIDER`（默认 `local_rules`）、`DR_MODERATION_DEGRADED_POLICY`（默认 `quarantine`）、`DR_ALERT_*` + `DR_ALERT_WEBHOOK_URL`、`DR_OPS_TOKEN`（staging/prod 未设则 401）、`DR_SHARE_ENABLED`（默认 `false`）。
-- 观测与错误追踪：`OTEL_EXPORTER_OTLP_ENDPOINT` / `DR_METRICS_PROMETHEUS`、`DR_SENTRY_DSN*`（需求 25）。
-
-> ⚠️ `.env.example` **尚未补齐**上表中 `DR_ENV`、`DR_S3_*`、`DR_PG_*`、`DR_ALERT_*`、`DR_RETENTION_*`、`DR_VALIDATE_*`、`DR_METRICS_PROMETHEUS`、`OTEL_EXPORTER_OTLP_ENDPOINT` 等项 —— 这些变量目前只在代码与 `docker-compose.staging.yml` 里有默认值（待补）。
-
-### 3.2 工具：arXiv 学术检索 + 代码执行（W4）
-
-**arXiv**：官方 API 直连，无需 key（自动 3s 间隔限流）。是否参与检索由 `ENABLE_ARXIV` 控制（代码默认 `true`，compose/staging 默认 `false`）。
-
-**代码执行**：查询命中计算/复杂度/数值关键词时触发。**默认不作为事实证据**（`CODE_EXEC_EVIDENCE_ENABLED=false`）：当前脚本是固定模板（n=8192 的 FLOPs 示例），不消费查询的数值 / 单位 / 公式 ⇒「运行成功」≠「回答了问题」（审计 F03）。打开仅用于调试工具链。
-
-**代码执行沙箱**（三层纵深 + 2026-11 审计加固）：
-- subprocess `python -I -E -S -X utf8` 隔离执行（不加载 site-packages = 天然依赖白名单）+ **最小化环境变量白名单**（只传 `SYSTEMROOT`/`PATH`/`TEMP` 等启动必需项，父进程密钥/业务变量不再继承）+ `timeout=15s` + **有界输出读取**（单流超 128KB 即截断并终止子进程 ⇒ 返回 `ok=False`；旧实现为截断后 `ok=True`；父进程内存 ≤ 2×128KB）+ 并发上限 2；
-- AST import 白名单：仅 `{math, statistics, itertools, functools, decimal, fractions, collections, typing, random}`；
-- PEP 578 Audit Hook 运行时拦截（**真实事件名 + 前缀匹配**：`socket.*` / `subprocess.*` / `os.exec*` / `os.spawn*` / `os.system` / `os.startfile` / `winreg.*` / 破坏类事件 / `os.chdir` 拒绝；`import` 拒绝 `_socket`/`_ctypes`/`_winapi` 等危险 C 扩展，并按前缀拒绝 `_interp*`/`_xx*`/`_test*`（**子解释器模块**，见下）；`exec`/`compile` 拒绝；`open` 按**构建期固定的沙箱根**（两侧 `normcase`）判包含，读也拒）；
-- 可选增强（默认关）：`CODE_EXEC_USE_JOB=true` 启用 Windows Job Object `KILL_ON_JOB_CLOSE`（防 ctypes 逃逸孙进程）。
-
-> ✅ **2026-11 审计整改（#327）**：原「已知限制」中的 1/2/4 类已修复——
-> ① 最小环境 ⇒ `DASHSCOPE_API_KEY` 等父进程密钥在沙箱内不可见（实测 `HAS_KEY=False`）；
-> ② `os.chdir` 被拒 + `open` 判据改为构建期固定根 ⇒ 改目录后读 `.env` 的路径失效；
-> ③ deny 列表改为真实 PEP 578 事件名（旧 `socket.socket` 事件名不存在，网络拒绝实际未生效）并前缀覆盖 `socket.*`/`subprocess.*`；
-> ④ 新增危险 C 扩展 import 拦截（`__import__('_socket')` 实测被拒）、`exec`/`compile` 拒绝、输出超限即杀；
-> ⑤ **已覆盖 subinterpreter 绕过（B1，3.11–3.13 多版本回归）**：PEP 578 hook 按解释器注册、子解释器不继承，而 `_interpreters`(3.13+)/`_xxsubinterpreters`(≤3.12)/`_testcapi.run_in_subinterp` 是内置模块 ⇒ 按 `_interp*`/`_xx*`/`_test*` 前缀拒绝 import；实测 3.11/3.12/3.13（+3.14）子解释器内恢复 socket/subprocess 的 PoC 全部被拒。
->
-> ⚠️ **仍存在的限制**（不足以对抗最强恶意代码，接 LLM 生成代码前仍需评审）：
-> 1. **白名单内的纯 Python 模块不可用**：`statistics`/`decimal`/`fractions`/`collections`/`typing`/`random` 在 `-S` 下需读 stdlib `.py`，被 `open` 判据拒绝（实际可用主要是 C 扩展/内建：`math`/`itertools`）。本次不放开 stdlib 读面（放开需单独设计只读白名单）。
-> 2. **无 OS 级/内存隔离**：沙箱以 API 进程同用户执行；内存上限只覆盖输出通道（2×128KB），用户代码自身的内存分配未设限（后续可在 Job 上加 `ProcessMemoryLimit`）。
-> 3. **预加载 C 模块不可撤销**：`winreg`/`nt`/`_io` 等在解释器启动时已在 `sys.modules`，import 拦截管不到；`winreg.*` 审计事件已加入 deny（OpenKey/CreateKey/SetValue/EnumKey 等被拒），但**未覆盖审计的非审计路径**（如部分查询/关闭 API）与 `os.listdir`/`os.scandir`/`os.stat` 元数据枚举仍可读到目录/路径信息（文件内容读取被 `open` 判据拒绝）。本层不宣称能完全阻断信息面。
-> 4. 超时/输出超限只能 kill 直接子进程；进程树级终止依赖可选 Job Object（默认关）。
->
-> **当前风险受控**：唯一调用方 `_search_code` 执行的是硬编码常量脚本（`_default_code_script()`，不含任何查询文本），且 `evidence_enabled` 默认 `false` ⇒ 默认链路不执行代码。真要把 LLM 生成代码接进来，仍需容器/低权限账户级隔离（超出本仓库当前范围）。
-
-**Semantic Scholar 引用补全**（可选）：设 `SEMANTIC_SCHOLAR_API_KEY` 后，arXiv 论文的 `citationCount` 回填进报告溯源（"只采不决策"——不加权证据排序）；无 key 整条静默跳过。
-
-### 3.1 可观测性（OpenTelemetry，可选）
-
-> **三态开关**：配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 即自动启用（trace 经 OTLP 导出）；设 `DR_OTEL_ENABLED=false` 可强制禁用（CI/单测默认已禁用，零外发）；缺端点自动降级，主流程零影响。Web（API/Worker）与引擎（CLI）同栈同 env。
-
-启用后：
-- CLI/Web 启动打印**知情行**（数据去向 + 脱敏策略）；
-- CLI 运行结束按模板回显 **trace URL**（`DR_OTEL_TRACE_URL_TEMPLATE`，如 Jaeger `http://localhost:16686/trace/{trace_id}`）；
-- 每次 LLM 调用记录 `gen_ai.*` 属性（provider/model/usage）与逐调用成本估算（`dr.cost_estimate_cny`，本地定价表、人民币口径）。
-
-本地演示（零外部依赖）：
-
-```bash
-docker run --rm -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one:latest
-OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 \
-DR_OTEL_TRACE_URL_TEMPLATE=http://localhost:16686/trace/{trace_id} \
-python cli.py "研究主题"
-```
-
-后端可插拔：任意 OTLP 后端均可（Jaeger / 自托管 Langfuse OTLP ingest / Tempo 等）。
-
-脱敏默认策略：节点 span 只记录截断输入（≤200 字符）；LLM messages/completion 单字段 >4000 字符截断；敏感替换默认关闭（避免误伤论文/代码中的数字信息），需要时设 `DR_OTEL_MASK_SENSITIVE=true`。
-
-### 4. 启动 Qdrant
-
-```bash
-# Docker 方式
-docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
-```
-
-### 5. 运行
-
-**CLI 方式：**
-```bash
-python cli.py "2026 年 RAG 技术的最新进展"
-```
-
-**Web UI 方式（W9 呈现层：FastAPI + React/Vite + SSE）：**
-```bash
-# 后端（SSE 端口 8000）
-uvicorn web.backend.main:app --host 127.0.0.1 --port 8000
-
-# 前端（另开终端，Vite dev server 5173）
-cd web/frontend && npm ci && npm run dev
-```
-
-打开 http://localhost:5173 。生产模式下由 FastAPI 直接托管 `web/frontend/dist/`，只需启动后端。
-
-**Docker 方式（staging 骨架，P1 部署底座）：**
-```bash
-# 一条命令：PostgreSQL + Redis + 迁移 + API（前端构建产物打进镜像，由 FastAPI 托管）
-docker compose -f docker-compose.staging.yml up -d --build
-curl http://127.0.0.1:8000/api/health/ready     # {"status":"ready","checks":{"postgres":"ok","redis":"ok"}}
-
-# 端口冲突时用环境变量覆盖（本机 5432/6379/8000 常被其他项目占用）
-# DR_POSTGRES_PORT=15432 DR_REDIS_PORT=16379 DR_API_PORT=18080 docker compose -f docker-compose.staging.yml up -d --build
-docker compose -f docker-compose.staging.yml down       # 停服；加 -v 连数据卷一起删
-```
-
-- 迁移**只前向**执行（`migrations/NNNN_slug.sql` + `schema_migrations` 记录），重复执行全部 `skip`（CI 锁幂等：第二次必须 `applied=0`）；
-- 探针：`/api/health/live`（进程活着）与 `/api/health/ready`（PG/Redis **未配置时不算失败**，配置了但探不通返回 503）；
-- **执行模式**：compose 默认 `DR_EXECUTION_MODE=queue` —— API 只创建 `QUEUED` 任务并投递 Redis，独立 `worker` 服务领取执行（同镜像不同入口，`python -m web.backend.worker`）；本地开发默认 `inprocess`（请求进程内执行，行为与 P1/P2 一致）；
-- **租约与重试**（P3-B）：Worker 每 30s 清扫过期租约 —— 用户已取消的收口为 `CANCELLED`，其余按 `attempt+1` 重新入队（默认重试 1 次），耗尽记 `LOST`；单 run 预算闸在节点边界检查，超限停止（`stop_reason=budget_exceeded`）；
-- 容器冒烟（2026-09-26）：api + worker + PG + Redis 全栈，真实任务由 Worker 完成（17 事件 / token 799 / ¥0.0096 / 2.3s）；
-- CORS：不设 `DR_CORS_ORIGINS` 时仅允许本地 Vite（5173）；staging/生产**必须显式设置**；
-- Qdrant 不在 compose 内：默认指向宿主机 `host.docker.internal:6333`，staging 用 `QDRANT_URL` 指向真实实例；
-- 外部服务按推荐基线默认关闭（OTel 导出 `DR_OTEL_ENABLED=false` / `ENABLE_ARXIV=false`）；
-- **账号（P4-A / P1-10 / 需求 24）**：`DR_AUTH_REQUIRED=true` 后运行接口需登录（Argon2id + httpOnly `__Host-` Session + CSRF 双提交）；开放注册（邮箱 + 密码 + 同意条款）；会话治理（列表 / 终止其他设备 / 空闲超时）；CLI：`python -m web.backend.admin create-user` / `ban-user` / `create-reset-token`；自助找回密码（`DR_SMTP_*`，未配置整条关闭且恒 200 防枚举）。
-- **配额与限流（P4-B / P1-1 / P1-2）**：单用户 `DR_DAILY_RUNS_PER_USER` 次/日、并发 `DR_MAX_USER_CONCURRENT`；单次预算 `DR_RUN_BUDGET_CNY=¥1.50`、全局月度 `DR_MONTHLY_BUDGET_CNY=¥1,500`（100% 熔断新任务，查询/导出不受影响）；准入与月度预留在 **PostgreSQL 单事务 + `pg_advisory_xact_lock`** 下原子判定（并发不再一起越闸）；`GET /api/quota` 查余量；请求指纹幂等（同键不同载荷 409 `idempotency_conflict`）；限流为 **Redis 滑动窗口（Lua）** 多实例共享，Redis 故障 fail-open 并回落进程内计数（`ratelimit_redis_error` 指标）——多实例下限流为准入参考而非强保证。
-- **RAG 三层与隔离（P5-A / 需求 23 / P0-8）**：知识库块带 `user_id`/`tenant_id`/`visibility`，检索作用域**下推 Qdrant `must` 过滤** + Python 后置兜底（owner 只见本人 private，匿名只见无主历史块，绝不跨用户）；分块 v2（结构保真、token 预算）、双路召回 + RRF、可选云端 rerank（`DR_RAG_RERANK` 默认关，失败 fail-open）；上传面已上线：流式落盘 + 扩展名/magic bytes 校验 + 内容寻址 `doc_id` 幂等 + 异步摄取管线（隔离区 → 202 → Worker 状态机，可选 ClamAV，90 天清扫）。
-- **内容安全与隐私（P7-A / P0-4 / P2-5）**：输入预检词表命中即拒；**输出闸**在发帧 / 落库前递归脱敏，审核状态与终局**同事务**落库，导出与历史回放强制脱敏（403 `output_under_review`）；申诉状态机 + SLA（`DR_APPEAL_SLA_HOURS=72`）；注销走 durable outbox（验证向量归零 + 指数退避 + 耗尽 `abandoned`）；保留期自动清理（`DR_RETENTION_*`）；安全审计日志 append-only（`X-Request-ID` 贯穿）。⚠️ `DR_MODERATION_PROVIDER` 默认 `local_rules` 是**本地规则词表、不是审核服务**，正式开放前必须接入有资质服务。
-- **可观测与恢复（P8-A / P1-4~P1-9）**：`GET /api/metrics`（HTTP/SSE 计量 + 状态分布与成功率、队列积压、过期租约、月度成本）；`GET /api/ops/alerts`（四类阈值 + 指纹去重 + webhook 退避外送，飞书/钉钉/企微/JSON，`DR_ALERT_WEBHOOK_URL` 未配置则零外呼）；报告可落对象存储（MinIO 私有桶 + 90 天生命周期，未配置回落 PG）；用量账本逐调用记账（`cost_source` = `estimate`/`per_call`/`provider`）；`tools/backup.sh`（`pg_restore -l` 可读校验 + 可选证书加密 `BACKUP_ENCRYPT`）/ `restore.sh`，CI 每次 PR 真实执行「备份 → 清库 → 恢复」演练。
-- **注入确定性防护（P2-1a）**：不可见 Unicode 剥离（`sanitize.py`，外部内容全边界接入）、输入窄口径模式预检 + 输出系统提示泄漏扫描（`injection_guard.py`）、SSRF 防护 `safe_fetch.py`（resolve → 全地址校验 → 禁重定向 → pin IP → 限额）。
-- **只读分享（需求 26）**：`DR_SHARE_ENABLED`（默认 `false`）打开后可将报告发布为公开只读链接 `/s/{token}`；受限流 `DR_SHARE_RATE_PER_MINUTE=30`。
-- **错误追踪（需求 25）**：`DR_SENTRY_DSN` / `DR_SENTRY_DSN_FRONTEND`（DSN 为空 = 关闭）。
-
-Web UI 支持：提交研究主题与**运行档位**（quick / standard / deep；档位表由服务端固定底层参数并随 run 快照留痕，
-请求体里旧的底层字段如 `max_total_hops` 一律忽略并留痕 `ignored_overrides`）、实时查看阶段进度与降级事件、
-查看 token/cost、**随时取消**（节点边界协作式取消，实测停止耗时中位 14.4s / 最大 31.4s）、查看带引用的报告与引用溯源、
-**后端导出报告**（正文 + run_id / run_status / 降级条数等审计元数据 + 引用清单）、**刷新页面恢复当前运行**、
-**历史任务列表**（`GET /api/runs`，需配置任务库；支持状态筛选、分页、置顶 / 归档 / 重试）、
-**只读分享**（`DR_SHARE_ENABLED` 打开后生成公开只读链接 `/s/{token}`）、
-**账号与会话**（P6 / P1-10：鉴权开启时登录门；开放注册（邮箱 + 密码）；配额 chip；历史报告预览；知识库上传 / 清单 / 删除；会话与安全面板；自助找回密码）、
-**反馈与帮助中心**（`/api/feedback`、`/api/help/faq`）、
-查看**运行摘要**（总耗时 / 完成节点 / 检索跳数 / 降级条目 / 报告字数 / 成本估算）。
-
-> **断线重连语义**：短暂断网由浏览器 `EventSource` 自动重连，并带 `Last-Event-ID` 续传；
-> 刷新页面凭 `sessionStorage` 里的 run_id + `GET /api/research/{id}` 状态快照 + **从 0 回放全部帧**恢复
-> （回放已发生事件，**不产生新的 LLM 调用**）。**终局后保留**最近一次 run 的 id ⇒ 刷新仍能回看最终报告或错误卡；
-> **可补发** = 进程存活期间产生的全部事件帧（内存保留，事件 id = 帧下标）；配置任务库（`DR_DATABASE_URL`）后，
-> **进程重启也能续上** —— `GET /stream` 从 `run_events` 按同一序号回放，**并继续尾随新事件直到终局**（P3：每秒轮询任务库）。
-> **仍不可补发** = 跨标签页恢复（`sessionStorage` 按标签页隔离）；未配置任务库时行为与 D-19 相同（重启即失）。
->
-> **资源边界（诚实口径）**：单次 run 的事件帧、结果与报告**常驻内存**，随 run 数线性增长；
-> 配置任务库后同步落库（事件 / 终局状态 / 报告产物），重启后仍可查询与导出，**但任务不会被续跑**
-> —— 单实例内存态执行的残留非终局任务在服务启动时被标记为 `LOST`（租约接管属 P3）。未配置任务库时进程重启即消失。
-> 客户端断开只停止**投递**，不会杀掉后端运行（取消必须显式调用 `POST /cancel`）；
-> SSE 等待由心跳（15s）兜底超时，不会永久占住执行器线程；工作线程为 daemon，三条终局路径均释放，
-> 强制收口后线程随节点自然收尾退出。
-
-> 事件语义对齐 [AG-UI](https://docs.ag-ui.com/)；取消采用**协作式**而非抢占式 —— 取消请求立即生效，
-> 执行停止在下一个节点安全边界，取消后不再启动新的研究节点与 LLM 调用。详见 `docs/requirements/9-web-ui-rewrite.md`。
->
-> ⚠️ W9 之前的 Streamlit 旧入口 `web/app.py` 已于 2026-09-23 删除；依赖与 lock 已同步清理，不再维护。
-
-#### 运行护栏（P1，2026-09-24）
-
-| 护栏 | 行为 | 默认值 / 开关 |
-|------|------|---------------|
-| 运行超时闸 | 单次 run 有墙钟时限，到点后在**节点边界**停止；`stop_reason=timeout`，**不记为故障** | 3600s，`DR_RUN_TIMEOUT_SECONDS` |
-| 单进程并发限制 | 同时活跃 run 数封顶，超出返回 429（`code=concurrency_limit`） | 1，`DR_MAX_CONCURRENT_RUNS` |
-| 强制收口宽限 | 协作式停止失效（节点内部挂死）时，传输层最多再等这么久就补 `RUN_ERROR(stop_forced)` 收口 | 60s，`DR_FORCED_STOP_GRACE_SECONDS` |
-| 状态查询 | `GET /api/research/{run_id}` 返回内存态画像（状态、已跑时长、剩余时间、事件数、stop_reason） | —— |
-| 结构化错误 | 所有 HTTP 错误与 `RUN_ERROR` 共用 `{code, message, component, node, detail, retryable, hint}` | —— |
-| 报告导出 | `GET /api/research/{run_id}/report?format=md\|json`（审核未通过时 403 `output_under_review`） | —— |
-| 启动硬校验 | `DR_ENV=staging\|production` 时鉴权开关 / Secure Cookie / 显式 CORS / LLM 密钥任一缺失即**拒绝启动**；production 另拒明文 HTTP | `DR_ENV`，默认 `local` |
-| 备份与恢复 | `tools/backup.sh`（`pg_restore -l` 可读校验 / 保留 N 份 / 可选证书加密）+ `tools/restore.sh`；CI 每次 PR 真实演练「备份 → 清库 → 恢复 → 种子数据相等」 | `BACKUP_ENCRYPT` 等 |
-
-⚠️ **超时与强制收口都是协作式的**：Python 线程无法被 kill，若某个节点内部（如一次 HTTP 调用）挂死，
-闸只能在下一个节点边界生效；硬截止只保证**传输层**收口、客户端不再干等，后台线程可能仍在收尾。
-这是语言级限制，不是实现偷懒。
-
-强制收口与终局写入已在同一把锁下原子完成（ADR-0008）：收口一旦发生，后台线程迟到的报告 / 状态 / 事件帧
-会被**完全丢弃**，不会出现「收口后又出报告」「RUN_FINISHED 与 RUN_ERROR 双终局」。
-
-**浏览器 E2E（已接 CI）**：用 `DR_DEMO=1` 的假图跑真实 SSE 管线，当前 **89 个用例 / 21 个 spec**
-（desktop + mobile 双 project，2026-11-03 `npx playwright test --list`）。覆盖主流程 / **刷新恢复** / **完成后续看** /
-降级可见 / 导出 / 取消语义 / 结构化错误 + 重试 + **详情折叠** / 窄屏无横向滚动。
-
-```bash
-cd web/frontend
-npm ci
-npm run build                      # 后端托管 dist/，E2E 打的是 8000 端口
-DR_PYTHON=<项目 venv 的 python> npm run e2e
-# 换浏览器：E2E_CHANNEL=msedge npm run e2e（默认用本机 Chrome，不下载浏览器）
-```
-
-CI 里的 `e2e` job 用**官方 Chromium**（`E2E_CHANNEL=chromium` + `playwright install --with-deps chromium`），
-不依赖 runner 预装浏览器。**首轮实测**（run `36006923861`）：job 总耗时 **109s**（含 Python 依赖 + npm ci +
-build + Chromium 安装），用例 **10 passed / 45.0s** —— 成本远低于接入前的预估（原估 4~6 分钟）。
-
-## 目录结构
-
-```
-DeepResearch/
-├── research_engine/              # 核心引擎
-│   ├── graph.py                  # LangGraph 状态机编排（8 节点）
-│   ├── state.py                  # Pydantic 类型化状态
-│   ├── critic.py                 # Critic 硬闸 + LLM 裁决 + 路由纯函数
-│   ├── render.py                 # 溯源渲染（类型标注 / 失败隔离 / 可信声明）
-│   ├── evidence.py               # 三层证据（内容寻址 evidence_id + origin 链）+ 去重
-│   ├── repair.py                 # 有界返工（确定性移除 / 降格未通过论断）
-│   ├── budget.py                 # 调用准入与 token 预留 / 结算
-│   ├── failure_reasons.py        # 单一来源的失败原因枚举
-│   ├── runtime_profile.py        # 运行档位 contextvar（quick / standard / deep）
-│   ├── sanitize.py               # 不可见 Unicode 剥离（注入防护确定性层）
-│   ├── streaming.py              # 流式运行载体 RunStep / 终止原因
-│   ├── usage.py                  # 用量账本 sink（contextvar）
-│   ├── agents/                   # 多 Agent 节点
-│   │   ├── planner.py            # 分解子问题 + replan
-│   │   ├── researcher.py         # 多跳并行检索（web / RAG / arXiv / code）
-│   │   ├── writer.py             # 生成带引用报告
-│   │   └── validator.py          # 引用存在性 + 忠实度 + 多源印证
-│   ├── rag/                      # RAG（需求 23 三层）
-│   │   ├── ingest.py             # 文档解析、向量化
-│   │   ├── chunker_v2.py         # 分块 v2（结构保真、token 预算）
-│   │   ├── retriever.py          # 双路召回 + RRF 融合
-│   │   ├── rerank.py             # 云端 rerank（默认关，fail-open）
-│   │   ├── identity.py           # 人物实体硬闸
-│   │   ├── scope.py              # 多租户作用域（Qdrant must 下推 + 后置兜底）
-│   │   └── store.py              # Qdrant 封装 + payload 索引
-│   ├── search/                   # 网络搜索（可切换 Provider）
-│   │   ├── base.py               # Provider 抽象 + 结构化失败原因
-│   │   ├── bocha.py / tavily.py  # 博查 / Tavily 实现
-│   │   └── arxiv.py              # arXiv 官方 API（3s 限流）
-│   ├── llm/                      # LLM 封装
-│   │   ├── client.py             # 百炼 Qwen 客户端 + JSON 纠错重试
-│   │   └── router.py             # 三层 LLM 分级 + 职责桶计量
-│   ├── tools/code_exec.py        # 代码执行沙箱（⚠️ 已知限制见 §3.2）
-│   ├── net/safe_fetch.py         # SSRF 防护抓取
-│   ├── context/                  # 上下文管理（隔离 + 压缩）
-│   └── eval/                     # 评测
-│       ├── run.py                # 两阶段管道入口（--run-only / --eval-only）
-│       ├── metrics.py            # 七指标定义与判定
-│       ├── aggregate.py          # 指标聚合一处定义 + 质量闸
-│       ├── citation_judge.py     # 独立引用裁判（temperature=0 + schema）
-│       ├── report_gen.py         # 评测报告 / 结论文档生成
-│       └── {retrieval,citation,report}_eval.py  # ⚠️ 早期评测器，未接入主链路
-├── web/                          # 呈现层（FastAPI + React/Vite + SSE，对齐 AG-UI）
-│   ├── backend/                  # 30+ 模块
-│   │   ├── main.py               # FastAPI 应用装配与 HTTP/SSE 端点
-│   │   ├── agui.py               # AG-UI 事件编码 + 心跳帧
-│   │   ├── runner.py             # 运行管理 + 协作式取消 + 终局原子落库
-│   │   ├── worker.py / queue.py  # 队列模式 Worker（PG 派发权威）+ Redis 唤醒
-│   │   ├── store.py              # RunStore（迁移 / 租约 / 配额准入 / 审计 / 保留期）
-│   │   ├── auth.py / ratelimit.py / profiles.py / admin.py
-│   │   ├── moderation.py / moderation_providers.py / appeals.py / injection_guard.py
-│   │   ├── ingestion.py / upload_guard.py / rag_pipeline.py
-│   │   ├── retention.py / deletion.py / alerts.py / notify.py
-│   │   ├── metrics.py / otel.py / observability.py / egress.py / usage.py
-│   │   ├── objectstore.py / mailer.py / export.py / errors.py / persistence.py
-│   │   └── demo_graph.py         # DR_DEMO=1 离线演示图（零 LLM）
-│   ├── frontend/                 # React + TS + Vite + Tailwind
-│   │   ├── src/features/         # auth / history / knowledge-base / landing / launch / report / run
-│   │   ├── src/{hooks,lib,types}/  # api / format / 类型收敛；lib/progress.ts 分层进度
-│   │   └── e2e/                  # Playwright（desktop + mobile 双 project）
-│   └── __init__.py               # ⚠️ W9 之前的 Streamlit 旧入口 web/app.py 已于 2026-09-23 删除
-├── tools/
-│   ├── check_frontend_boundary.py  # CI 守卫：前端目录不得 import research_engine
-│   ├── check_results_whitelist.py  # CI 守卫：评测产物白名单 ≡ git 跟踪集合
-│   ├── check_public_ip.py          # CI 守卫：公开仓不得出现真实主机 IP
-│   ├── check_doc_consistency.py    # CI 守卫：figures/ADR/注册口径/README 数字一致性
-│   ├── check_tailwind_tokens.py    # CI 守卫：Tailwind 色板 token 不得误用
-│   ├── check_ui_patterns.py        # CI 守卫：UI 反模式（impeccable 确定性规则）
-│   ├── migrate.sh / backup.sh / restore.sh
-│   └── loadtest/                 # Locust 压测脚本
-├── migrations/                   # 27 个前向迁移（NNNN_slug.sql + schema_migrations）
-│   └── checks/                   # 31 个结构断言 SQL（CI infra job 强制执行）
-├── docs/                         # 需求 45 篇（另模板）/ ADR 18 篇 / 评测结论 / 运维 runbook / legal；对外数字见 figures.md
-├── Dockerfile.api                # API 镜像（node 构建前端 + python 运行时，多阶段）
-├── docker-compose.staging.yml    # staging：PostgreSQL + Redis + 迁移 + API + worker
-├── Caddyfile                     # 反向代理样例
-├── cli.py                        # CLI 入口
-├── config.py                     # 配置
-└── requirements.txt
-```
-
-## 评测
-
-**正式入口是两阶段管道**（运行与评估解耦，换裁判 / 调评测器都不必重跑图）：
-
-```bash
-# 一条命令跑完整两阶段（Phase 1 跑图存原文产出 → Phase 2 读 raw 算指标）
-python -m research_engine.eval.run
-
-# 只跑 Phase 1（存 raw，可断点续跑：已有 raw 的题跳过）
-python -m research_engine.eval.run --run-only
-
-# 只跑 Phase 2（零成本复算：不重跑图，只重跑评估器；judge 调用仍烧 LLM）
-python -m research_engine.eval.run --eval-only --run-dir=research_engine/eval/results/run_XXXX
-```
-
-指标定义与判定在 `eval/metrics.py`，聚合与质量闸（`verdict` + ±stderr）在 `eval/aggregate.py`，独立引用裁判在 `eval/citation_judge.py`。
-
-> ⚠️ `eval/retrieval_eval.py` / `citation_eval.py` / `report_eval.py` 三个早期评测器**未被主链路调用**（保留作参考，勿据此判断当前口径）；`ReportEvaluator` 的报告质量评级目前由**人工报告级抽检**兜底，未接入七指标主表。
-
-### 评测跑批与产物纪律（W8）
-
-正式评测会调用外部模型/API 并产生费用；在做版本比较前，应先冻结代码提交、配置和数据集，再运行固定规模的 baseline。评测产物默认写入 `results/`，该目录默认被 Git 忽略；只有被正式结论文档引用、并在 `.gitignore` 白名单中登记出处的产物才允许入库。
-
-跑完评测后先检查白名单纪律：
-
-```powershell
-python tools/check_results_whitelist.py
-```
-
-不要直接手动删除、移动或重命名 `results/` 中的历史产物。W7 回填和 W8 台账都可能依赖 `raw/*.raw.json` 作为零成本复算证据；需要清理或归档时，先查看 `docs/eval-artifact-ledger.md` 并完成人工 review。
-
-### W7 主链路开关（默认行为）
-
-W7 的五个开关属于主链路行为选择，不是独立插件；未设置环境变量时均默认为 `true`。正式跑批或版本比较时，应把它们的有效值随 provenance 一起记录：`CRITIC_GAP_ENABLED`、`VALIDATOR_FIXES_ENABLED`、`VALIDATOR_ASSERTIVE_FILTER_ENABLED`、`WRITER_SECTIONED_FEED_ENABLED`、`VALIDATOR_TRIM_ENABLED`。
-
-其中 `CRITIC_GAP_ENABLED=true` 可保留 coverage，但实测约增加 118% 的 steps；`VALIDATOR_FIXES_ENABLED` 与 `VALIDATOR_ASSERTIVE_FILTER_ENABLED` 默认保留已知缺陷修复；`WRITER_SECTIONED_FEED_ENABLED` 与 `VALIDATOR_TRIM_ENABLED` 暂维持开启，待 W8 重新测量后再裁定。不要在未记录开关值的情况下横向比较评测结果。
-
-## 能力与限制（W8 实测口径）
-
-> 这一节是**对外口径**：能说什么、不能怎么说，全部有实测依据。
-> 判定过程见 [`docs/eval-w8-after-baseline.md`](docs/eval-w8-after-baseline.md)，
-> 逐项验收证据见 [`docs/eval-w8-dod.md`](docs/eval-w8-dod.md)。
-
-### 能做到（A 类确定性断言，零噪声，不依赖统计功效）
-
-| 能力 | 实测证据 |
+| 是 | 不是 |
 | --- | --- |
-| **故障可归因率 0% → 100%** | 工具 / provider / RAG / 内部错误均有明确 `failure_reason`，枚举一处定义（16 条测试） |
-| **状态分层** | `run_status` / `invoke_status` / `metrics_status` 语义分离；历史产物 dual-read 且**未被回填**（26 条） |
-| **异常不伪装** | 失败的 run 不会伪装成成功或空结果；递归超限、异常退出均有契约（24 条） |
-| **成本守恒** | 成本源缺失时显式降级并标记，**不静默显示 ¥0**（21 条） |
-| **质量闸** | 每轮 run 落 `verdict` + `verdict_reasons` + ±stderr，阈值外置、只告警不阻断（20 条） |
-| **可复现元数据** | 配置、五开关生效值、`prompt_hash`、`scorer_version` 随每轮落盘；历史缺失字段如实为「未记录」（36 条） |
-| **产物治理** | 白名单集合 ≡ git 跟踪集合，逐条写明引用出处（13 条 + CI 步骤） |
-| **运行稳定性** | after 基线 3 轮：**60/60 题完成、零异常**、`git_dirty=false` 三轮全中 |
+| 一个把「防幻觉」做成**图结构**而不是提示词的 DeepResearch 引擎 | 一个已经证明「研究结论可信」的产品（见下文评测的诚实口径） |
+| 一条**可回溯的证据链**：网页快照 → 逐字引文 → 字符偏移 → 分级处置 | 一个通用搜索/问答 API |
+| 一套**可复现**的工程纪律：配置快照、prompt hash、评分器版本、产物白名单 | 一个开箱即用的 SaaS（默认值面向本地与受控内测） |
+| 有 1500+ 单测、真 PG/Redis 集成、浏览器 E2E 与备份恢复演练的代码库 | 一个通过安全认证/合规备案可以公开运营的服务 |
 
-上述 8 项即 W8 的验收口径。**它们与「平均质量是否变好」是两件事，必须分开陈述。**
+---
 
-### 不能这么说（配对统计：四指标全部不可判定）
-
-20 题 × 3 轮同题配对对照（before 09-16 vs after 09-19，冻结代码 `f723c2d`，配置/题集/模型与 before 同构）：
-
-| 指标 | before | after | Δ | SE | MDE | 判定 |
-| --- | --- | --- | --- | --- | --- | --- |
-| coverage | 44.9pp | 39.8pp | −5.1pp | 3.81 | 10.66 | 不可判定 |
-| citation_accuracy | 75.2pp | 78.3pp | +3.1pp | 3.29 | 9.21 | 不可判定 |
-| retrieval_hit_rate | 55.2pp | 52.7pp | −2.5pp | 1.39 | 3.88 | 不可判定 |
-| steps | 9.4 | 8.2 | −1.2 | 0.48 | 1.36 | 不可判定（且按 D2 归因于 Arm 2 功能修复，不算质量证据） |
-
-- ❌ **禁止**：「W8 让覆盖率提升/下降 Xpp」「W8 让引用准确率提升 3.1pp」「W8 让系统少跑 1.2 步」。
-- ✅ **可以说**：「after 基线 coverage 39.8%（20 题 × 3 轮）」「四项均未达判定门槛，本实验不宣称平均质量提升或下降」。
-
-### 已知限制
-
-| 限制 | 说明 |
-| --- | --- |
-| **仪器噪声 > 效应** | coverage 的 run 内噪声 σ≈24pp，MDE(3v3)=10.66pp，而预期效应只有 4~10pp |
-| **before 基线不可重采** | 代码已改 ⇒ `R_b=3` 固定；单独加 after 轮次最多把 MDE 再降 14%（**D-18：故不续跑**） |
-| **引用裁判非独立（历史口径）** | 上表数字出自 W8 基线，当时 `citation_judge_independent=false`：评测层直读主链路 validator 产物。其后已新增独立裁判 `eval/citation_judge.py`（`temperature=0` + schema、`no_verdict` 不计通过），但**未在固定证据池上重跑**，故上表仍按非独立口径陈述 |
-| **检索是活的** | planner 每轮子问题不同 ⇒ 证据池本身会变；配对只消掉题目效应，消不掉检索漂移 |
-| **规模与语言** | 20 题中文数据集、单模型族（qwen-plus / turbo），结论不外推到其它语言或模型 |
-| **五开关未消融** | 主链路 5 开关默认全开，其单独贡献未经对照测量（见「W7 主链路开关」） |
-
-### 对外推荐表述（可直接引用）
-
-> W8 完成了故障状态分层、工具失败原因结构化、质量闸、成本守恒、可复现元数据和评测产物治理。
-> after 基线在 20 个问题上运行 3 轮，60/60 个题目实例完成且无异常。配对统计中 coverage、
-> citation accuracy、retrieval hit rate 和 steps 均未达到预设判定门槛，因此本实验不宣称 W8
-> 带来了平均质量提升或下降。W8 的主要收益是故障可归因、结果可审计和运行稳定性；after 侧轮次间
-> 波动出现下降迹象，但由于只有 3 轮，仅作为待验证观察。
-
-## 设计要点
-
-> 技术事实摆台面，不堆形容词。以下四件套是本项目的差异化设计。
+## 三个核心设计
 
 ### 1. 决策循环在图里，不在 prompt 里
 
-核心区别：不是"在 prompt 里让 LLM 自己决定继续还是停止"，而是用 LangGraph 的 `conditional_edge` 把四态路由暴露为**图结构**。
+`plan → research ⇄ critic → write → validate →[repair]→ render` 是显式的 LangGraph 状态机
+（[`research_engine/graph.py`](research_engine/graph.py)）；critic 先过**确定性硬闸**（depth / token），
+未触发才调 LLM 做结构化裁决，路由是纯函数（[`research_engine/critic.py`](research_engine/critic.py)）。
+LLM 说"继续"但硬闸说超预算 —— 停。不把安全性押在随机性上。
+
+### 2. 证据链可回溯
+
+网页候选实抓正文按内容寻址落盘为**快照**（robots + 预算三闸 + 熔断降级），引用携带
+**逐字引文 + 快照内字符偏移**（L0~L2 定位），交付自检与分级处置区分「致命 / 可修」。
+实现见 [`research_engine/evidence.py`](research_engine/evidence.py)、
+[`research_engine/quote_locate.py`](research_engine/quote_locate.py)、
+[`research_engine/evidence_grading.py`](research_engine/evidence_grading.py)。
+
+### 3. 故障可归因、结果可复现
+
+工具 / provider / RAG / 内部错误都有单一来源的 `failure_reason`；每轮 run 落盘配置快照、
+实验开关生效值、`prompt_hash`、`scorer_version` 与 git 修订；失败的 run 不会伪装成成功
+（[`research_engine/failure_reasons.py`](research_engine/failure_reasons.py)、
+[`research_engine/eval/provenance.py`](research_engine/eval/provenance.py)）。
+
+---
+
+## 快速开始
+
+**依赖**：Python 3.11 ~ 3.13（版本闸在 [`research_engine/__init__.py`](research_engine/__init__.py)）、
+Node 22（仅前端）、Qdrant、PostgreSQL / Redis（可选，用于持久化与队列）。
+
+```bash
+# 1) 后端依赖（两份 lock 分别固定运行与开发依赖）
+python -m pip install -r requirements-lock.txt -r requirements-dev-lock.txt
+cp .env.example .env          # 至少填 DASHSCOPE_API_KEY（LLM）与 BOCHA_API_KEY（搜索）
+
+# 2) 知识库（可选）
+docker run -p 6333:6333 qdrant/qdrant
+
+# 3) 启动后端（生产模式下直接托管前端构建产物）
+uvicorn web.backend.main:app --host 127.0.0.1 --port 8000
+
+# 4) 前端开发（另开终端）
+cd web/frontend && npm ci && npm run dev
+```
+
+全栈（PostgreSQL + Redis + 迁移 + API + Worker + MinIO）：
+
+```bash
+docker compose -f docker-compose.staging.yml up -d --build
+curl http://127.0.0.1:8000/api/health/ready
+```
+
+完整配置项见 [`.env.example`](.env.example) 与
+[`docs/operations/production-readiness.md`](docs/operations/production-readiness.md)；
+部署与回滚见 [`docs/operations/release-runbook.md`](docs/operations/release-runbook.md)。
+
+## 测试
+
+```bash
+# 零依赖 lane（与 CI 同口径；不需要 PG/Redis/API key）
+py -3.13 -m pytest tests/ --tb=no
+
+# 真 PG/Redis 集成 lane（CI infra job 强制跑）
+DR_TEST_INTEGRATION=1 py -3.13 -m pytest tests/ -q
+
+# 浏览器 E2E（DR_DEMO=1 假图 + 真实 SSE 管线）
+cd web/frontend && npm ci && npm run e2e
+```
+
+## 评测：先说"不能说什么"
+
+评测集是 **20 道中文自建题**（AI 草稿 + 人工校准），不是公开 benchmark；结论不外推到其它语言/模型。
+**同一指标在不同口径/裁判下不可直接比较**，因此这里只登记，不挑选：
+
+| 口径 | 数值 | 说明 |
+| --- | --- | --- |
+| W8 after 基线（2026-09-19） | coverage **39.8%**、citation_accuracy **78.3%** | 裁判与主链路同族、**非独立** |
+| 独立裁判复核（2026-10-07，ok 子集） | citation fidelity **85.4% ± 1.8pp** | 主链路 fidelity 52.2%；6/20 题裁判超时，指标缺失导致配对偏差 |
+| 单次自动快照（2026-10-07） | 严格口径 **43.3% ± 8.3pp** | `verdict=suspicious`；同期 uncited_fact_ratio ≈ 0.69 |
+
+- **四指标配对统计均未达判定门槛 ⇒ 本仓库不宣称任何"质量提升/下降"**。判定过程：
+  [`docs/eval-w8-after-baseline.md`](docs/eval-w8-after-baseline.md)、
+  [`docs/eval-w9-baseline.md`](docs/eval-w9-baseline.md)、
+  [`docs/eval-w7-conclusion.md`](docs/eval-w7-conclusion.md)。
+- **约 69% 的事实句没有引用、74~79% 的报告小节被系统自己标为「信息不足」**：研究质量本身
+  仍未达到可对外宣称的水平。这是本项目最诚实的短板，也是后续迭代的主目标。
+- 数字的唯一来源是 [`docs/figures.md`](docs/figures.md)（由 `tools/gen_figures.py --check` 机器校验结构事实）。
+
+## 架构与目录
 
 ```
-plan → research → critic ──(conditional_edge)──┐
-                  ↑   │        ├─ continue ─────┘（继续下一跳）
-                  │   │        ├─ augment  → revise → research（gap 查询回填 frontier）
-                  │   │        ├─ revise   → revise → research（方向跑偏：Planner.replan 全量重分解）
-                  └───┴────────┘
-                               └─ stop     → write → validate →[repair]→ render → END
+research_engine/     # 引擎：graph / agents / critic / evidence / rag / search / llm / eval / runtime
+web/backend/         # FastAPI：API、SSE、RunStore、Worker、鉴权、RAG、审核、运维（模块化中）
+web/frontend/        # React + TS + Vite + Tailwind；E2E 在 web/frontend/e2e
+migrations/          # 31 个前向迁移 + 31 条 schema 结构断言（只前向、字节不可变）
+tools/               # CI 守卫、figures 生成、备份/恢复/迁移脚本
+docs/                # 需求 45 篇、ADR 19 篇、评测结论、运维 runbook、legal
 ```
 
-**硬闸是二维的（depth / token）**，确定性优先于 LLM 裁决；`frontier` 空**不再是**硬闸（F02：留给 Critic 语义收敛，否则单子问题只能研究一跳），`replan` 上限在裁决**之后**判定。路由是纯函数——LLM 说"继续"但硬闸说"超 20 跳了"就停。防幻觉不是靠 prompt 祈祷，是靠图结构兜底。
+关键设计决策见 [`docs/decisions/README.md`](docs/decisions/README.md)；
+工程约束与 PR 纪律见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
-### 2. 防幻觉三件套
+## 质量与 CI
 
-| 手段 | 实现 | 位置 |
-|------|------|------|
-| **Validator 图内节点** | 引用存在性 + 忠实度双层校验，不通过论断进附录（不删除，读者需看见才能理解"为何不可信"） | `agents/validator.py` + `render.py` |
-| **引用溯源四桶** | 每条引用标注来源类型（web/rag/arxiv/code），可审计 | `state.py:Citation.source_type` |
-| **多源印证** | 关键论断需 ≥2 独立来源支撑，置信度分级呈现 | `validator.py` 交叉验证逻辑 |
+| 指标 | 当前值 | 采集口径 / 日期 |
+| --- | --- | --- |
+| 单元测试 | **1527 项**（2026-11-22 本机 Python 3.13 + 锁定依赖：1446 通过 / 81 跳过 / 0 失败） | `pytest --collect-only`；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 |
+| 浏览器 E2E | **89 个用例 / 21 个 spec** | `npx playwright test --list`；desktop + mobile 双 project，`DR_DEMO=1` |
 
-### 3. eval 诚实数字
+- **CI**：ruff + Python 3.11/3.12/3.13 矩阵 + frontend（tsc / vitest / 生产依赖审计 / build）+
+  infra（真实 PostgreSQL/Redis、迁移幂等、结构断言、**备份→清库→恢复演练**）+ e2e（官方 Chromium）。
+- **仓库守卫（6 个）**：评测产物白名单 ≡ git 跟踪、前端不得 import 引擎、公开仓真实 IP 扫描、
+  文档/数字一致性（含 ADR 索引与 figures）、Tailwind token、UI 反模式；
+  `tools/gen_figures.py --check` 额外机器校验 figures 里的结构事实。
+- **迁移不可变**：已应用迁移按 sha256 校验，修改历史迁移会被 CI 守卫拦下。
 
-| 指标 | 数值 | 口径说明 |
-|------|------|----------|
-| 单元测试 | **1477 项（收集统计，2026-11-03）** | 2026-11-03 本机零依赖 lane 复验：**1392 通过 / 81 跳过 / 5 环境失败**（5 个为 `.deps` 与 lock 漂移导致的 OTel 用例；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行）。CI：3.11/3.12/3.13 + `frontend` + `infra`（迁移幂等 + 结构断言 + 仓储/Worker 集成 + **备份恢复演练**）+ `e2e`。**浏览器 E2E 89 个用例 / 21 个 spec**（desktop + mobile 双 project） |
-| 完成率 | 100%（**60/60**） | after 基线：20 题 × 3 轮，**零异常**（before 基线三轮里两轮各有 1 题 failed） |
-| 引用准确率 | **78.3%** | 机器口径（LLM-as-judge）；人工抽检修正区间见 W7 结论文档 |
-| 覆盖度 | **39.8%** | after 基线 3 轮均值（同题配对 n=18）；before 为 44.9%，**差值不可判定**，见下节 |
-| 信息不足标记率 | **78.7%** | `insufficient_marker_ratio`：渲染器给报告小节打上「信息不足」标记的比例（after 基线 3 轮均值）。**只观测、无达标线**，但它反映的是系统对自己输出的评价 |
-| 单轮成本 | **¥0.79~0.92 / 48~51 分钟** | 20 题、并发 3、qwen-plus + qwen-turbo；真实 API 非确定性，需多轮取均值 |
+## 已知边界（不要当成能力）
 
-以上数字的采集命令、日期与口径断点见 [`docs/figures.md`](docs/figures.md)；跨口径/跨断点不得直接比较。
+- **不是生产级服务**：内容审核默认是本地规则词表（`local_rules`，默认空词表），无邮箱验证/CAPTCHA，
+  无资质审核服务；开放注册仅限受控内测。见 [`CONTRIBUTING.md`](CONTRIBUTING.md) §2。
+- **代码执行沙箱不是恶意代码隔离**：subprocess + AST 白名单 + PEP 578 Audit Hook 三层纵深，
+  但无 OS 级/内存隔离；默认不把代码结果当事实证据。见
+  [`docs/requirements/8-fault-transparency-and-reproducibility.md`](docs/requirements/8-fault-transparency-and-reproducibility.md)。
+- **搜索是单点**（博查；Tavily/arXiv 默认关闭）；子问题之间仍串行。
+- **RAG 差异化路径尚未进入正式评测**（评测路径无知识库），其收益没有量化证据。
 
-不吹指标。覆盖度 39.8% 就写 39.8%；before/after 的差值**不可判定**就写不可判定 —— 追问时有据可查
-（完整判定过程见 `docs/eval-w8-after-baseline.md`）。
+## 文档地图
 
-### 4. 与主流项目差异
+| 文档 | 内容 |
+| --- | --- |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 工程约束、PR 纪律、L3 边界、AI 协作规则 |
+| [`docs/figures.md`](docs/figures.md) | 对外数字唯一来源（含采集命令与日期） |
+| [`docs/plan/2026-11-execution.md`](docs/plan/2026-11-execution.md) | 2026-11 重构批次：已完成 / 未完成 / 原因 |
+| [`docs/decisions/`](docs/decisions/) | ADR（决策背景、取舍、影响） |
+| [`docs/requirements/`](docs/requirements/) | 需求与验收记录（按批次） |
+| [`docs/eval-w8-after-baseline.md`](docs/eval-w8-after-baseline.md) | 评测基线与统计判定过程 |
+| [`docs/operations/release-runbook.md`](docs/operations/release-runbook.md) | 发布、回滚、备份恢复 runbook |
 
-| 维度 | 本项目 | open_deep_research | dzhng/deep-research |
-|------|--------|--------------------|---------------------|
-| Validator | 图内节点（双层校验） | 无 | 无 |
-| 代码沙箱 | 三层纵深（subprocess+AST+Audit Hook）⚠️ 当前**不构成恶意代码隔离**，见 §3.2 | 无 | 无 |
-| 可观测 | OTel 全链路 trace（OTLP 可插拔后端） | LangSmith（可选） | 无 |
-| 量化评测 | 20 条 + 7 指标 + 双轨成本 | Deep Research Bench 100 题 | 无 |
-| 生产化（L3） | 账号 / 配额熔断 / 多租户隔离 / 内容安全与申诉 / 队列 Worker / 备份恢复演练 | 无 | 无 |
-| LICENSE | MIT | MIT | MIT |
+## 许可
 
-## 设计取舍
-
-- **成本优先**：初始阶段三层 LLM 全用便宜的 qwen-turbo/plus，后续可单独升级 strategic 到 qwen-max
-- **rerank 先评测再定**：默认关闭，先立评测再决定是否引入（借鉴 wechatbot 的 rerank 负收益经验）
-- **Validator 是差异化亮点**：主流 DeepResearch 项目普遍缺失图内 Validator 节点，本项目将其作为防幻觉核心
-
-## 相关文章
-
-- **《agentic loop 设计与 Critic 节点化踩坑》**
-  - 掘金：https://juejin.cn/post/7647054707223511059
-  - 知乎：https://zhuanlan.zhihu.com/p/2080442055638127641
-
-## 项目记忆（设计决策记录）
-
-本项目建立**设计决策记录（ADR）机制**作为项目记忆，见 [docs/decisions/README.md](docs/decisions/README.md)。
-
-**规范（分级执行）**：**架构级改动与线上缺陷修复必须**新增一条 ADR，记录**背景（当时为什么这么设计）+ 设计策略（现在为什么改、怎么改、取舍）**，保持决策链完整；局部实现细节、文案与样式类改动可不写。模板见 [docs/decisions/TEMPLATE.md](docs/decisions/TEMPLATE.md)。
-
-初始设计决策见 [docs/decisions/0001-initial-design.md](docs/decisions/0001-initial-design.md)。
-
-> **现状（如实登记，2026-10-26）**：`docs/decisions/` 现有 **17 篇** ADR（0001–0017，索引完整），仓库累计 **338 个提交**
-> —— 覆盖率约 **5.0%**。ADR 规范为**分级执行**（架构级改动与线上缺陷必须写，局部实现可免），不以覆盖率作为考核。
-> 索引已补齐（0010/0011/0016 已入索引），ADR-0009 已转「已采纳」（2026-10-26 追认），0012 重号已修正（OTel ADR → 0016）。
+MIT，见 [LICENSE](LICENSE)。第三方审计 skills 等仅本机使用的资产不随仓库分发（见 `.gitignore` 注释）。

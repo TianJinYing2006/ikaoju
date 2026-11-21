@@ -5,7 +5,32 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`research_engine/runtime/`（ADR-0019）**：`RunContext`（run_id / trace / 取消谓词）收敛一次 run 的运行期句柄；`with_token_writeback` 节点装饰器保证任意节点 delta 都带 `token_used`，新增节点漏写不可能。
+- **`tools/gen_figures.py`**：figures 结构事实的机器生成与两层校验（live→JSON 新鲜度、JSON→figures.md 一致性），CI 增加 `--check` step；`tests/test_gen_figures.py`（22 例）。
+- **`docs/plan/2026-11-execution.md`**：2026-11 重构批次的完成/未完成/原因与下一步。
+
 ### Changed
+
+- **README 重写**：从 531 行收敛为约 190 行；并列披露评测的四个不同口径，明确「是什么 / 不是什么 / 已知边界」；「单元测试 / E2E」数字保持与 figures 机器一致。
+- **仓库卫生**：`icon-lab/`、`ppt-report/` 移出 git 跟踪（本地文件保留），`.tmp/` 忽略；figures 代码规模/ADR/pytest 计数按 2026-11-22 实测回填。
+- **eval Phase 1 改为 per-run 图实例**：不再共享同一 graph/Agent 状态（并发跑批不再互相污染验证统计与降级记录）。
+
+### Fixed
+
+- **HITL token 计账**：`_clarify` / `_revise_plan` 写回 `token_used`，预算硬闸对 HITL 路径可见（此前静默低估）。
+- **压缩失败静默降级**：`ContextManager.compress` 失败现在记录 `DegradationSink` 并经 `_write` 进 `state.degradation_log`，不再把「压缩被绕过」显示为 success。
+- **validator fail-open**：无事实句时 `citation_coverage` 返回 `None` 而非 `1.0`。
+- **重试绕过输入安全闸**：`retry_run` 复用 `_check_input_safety`（空主题 / 内容审核 / 注入预检）。
+- **审计静默丢失**：`_audit` 写库失败改为 ERROR 日志（不含 detail 原文）。
+- **Passkey 假 fail-closed**：staging/production 未显式配置 `DR_WEBAUTHN_*` 时 `enabled()` 为 False（原 localhost 默认值导致恒真、选项谎报可用）。
+
+### Security
+
+- Passkey 生产环境 fail-closed（见 Fixed）；审计旁路失败可观测。
+
+### Changed（2026-10 批次，历史条目）
 
 - 注册改为**开放注册**（邮箱 + 密码 + 同意条款），不再需要邀请码；仍受注册/登录限流、单用户每日配额与月度预算约束。
 - **quick 档模型改为 `qwen-flash`（Issue #310）**：百炼 `qwen-turbo` 持续 429 `limit_requests` 且 quick 档把四个核心角色钉在 turbo ⇒ quick 不可用；`PROFILE_VERSION` v1→v2，补 qwen-flash 成本单价；standard/deep 不变。
