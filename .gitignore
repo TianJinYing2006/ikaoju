@@ -79,6 +79,16 @@ web/frontend/test-results/
 web/frontend/playwright-report/
 web/frontend/.playwright/
 
+# 非产品代码的工作区素材（2026-11 从 git 跟踪集合移出；本地文件保留）：
+# - icon-lab/：品牌图标设计工作区（50 个 PNG/SVG）
+# - ppt-report/：项目汇报材料
+# 需要恢复跟踪：git restore --source=dev --staged --worktree icon-lab ppt-report
+icon-lab/
+ppt-report/
+
+# 本地临时工作区（一次性脚本/草稿）
+.tmp/
+
 # 第三方审计 skills（前端重构辅助，来源见 docs/web-frontend-audit.md）：
 # 部分上游仓库未声明 LICENSE ⇒ 只在本机使用，不随公开仓库分发
 .opencode/skills/
