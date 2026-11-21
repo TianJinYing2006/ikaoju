@@ -35,7 +35,7 @@ from config import config
 from research_engine.evidence import serialize_evidence_index
 from research_engine.evidence_manifest import build_evidence_manifest  # 需求 35 R2
 from research_engine.graph import DeepResearchGraph, create_graph
-from research_engine.rag.scope import set_scope
+from research_engine.rag.scope import RagScope, set_scope
 from research_engine.report_stream import pop_report_sink, push_report_sink
 from research_engine.runtime_profile import (
     RuntimeProfile,
@@ -196,9 +196,16 @@ def make_graph_factory(checkpointer: Any = None) -> Callable[[], Any]:
 
         return factory
 
-    def factory() -> DeepResearchGraph:
-        return create_graph(checkpointer=checkpointer)
+    def factory(rag_scope: Any = None) -> DeepResearchGraph:
+        # 只在显式传作用域时使用新关键字参数：兼容既有的 create_graph 替身/旧签名。
+        if rag_scope is None:
+            return create_graph(checkpointer=checkpointer)
+        return create_graph(checkpointer=checkpointer, rag_scope=rag_scope)
 
+    # P5/R3（2026-11）：能力标记——worker 显式注入 RAG 作用域，不再依赖
+    # 「先 set_scope 再建图」的 ContextVar 顺序；loadtest 的 DemoGraph factory 无此标记，
+    # 走旧 fallback（DemoGraph 不检索 RAG）。
+    factory.accepts_rag_scope = True
     return factory
 
 
@@ -689,15 +696,19 @@ class Worker:
         request = row.get("request") or {}
         topic = row["topic"]
         self._apply_profile(request)
-        # P5：检索作用域须在 create_graph **之前**设置（Researcher 构建时捕获作用域，
-        # 避免 LangGraph 并行线程丢失 ContextVar → 运行期 RAG 恒零命中）；
+        # P5/R3（2026-11）：RAG 作用域显式注入（factory 支持时）；否则保留旧 fallback。
         # 修订号从任务库读（缓存键必须拿真实修订号，上传/删除后才会失效）
         try:
             rag_revision = self._store.get_rag_revision()
         except Exception:  # noqa: BLE001
             rag_revision = 0
-        set_scope(user_id=row.get("user_id"), revision=rag_revision)
-        graph = self._graph_factory()
+        rag_scope = RagScope(user_id=row.get("user_id"), revision=rag_revision)
+        factory = self._graph_factory
+        if getattr(factory, "accepts_rag_scope", False):
+            graph = factory(rag_scope=rag_scope)
+        else:
+            set_scope(user_id=rag_scope.user_id, revision=rag_scope.revision)
+            graph = factory()
         # 需求 35 R3（TBD-4/5）：解析执行模式（fresh/resumed/replayed）+ 预算对账
         execution_mode, resume_info = resolve_execution_mode(
             graph, run_id, ownership.attempt, self._store)

@@ -271,3 +271,54 @@ def test_researcher_captures_scope_at_construction(monkeypatch):
 
     assert captured["scope"] is not None
     assert captured["scope"].user_id == "u-capture"
+
+# ---------------------------------------------------------------- 2026-11：显式注入
+
+def test_create_graph_accepts_explicit_rag_scope(monkeypatch):
+    """主链路显式注入：contextvar 里是别人，图里仍是构造时传入的作用域。"""
+    from research_engine.graph import create_graph
+
+    monkeypatch.setattr("research_engine.agents.researcher.create_search_provider",
+                        lambda name: object())
+    monkeypatch.setattr("research_engine.agents.researcher.ArxivSearchProvider",
+                        lambda: object())
+
+    explicit = RagScope(user_id="u-explicit", revision=7)
+    with use_rag_scope(user_id="u-contextvar", revision=1):
+        graph = create_graph(rag_scope=explicit)
+
+    assert graph.researcher._rag_scope == explicit
+    assert getattr(create_graph, "accepts_rag_scope", False) is True
+
+
+def test_researcher_prefers_explicit_scope(monkeypatch):
+    from research_engine.agents.researcher import Researcher
+
+    monkeypatch.setattr("research_engine.agents.researcher.create_search_provider",
+                        lambda name: object())
+    monkeypatch.setattr("research_engine.agents.researcher.ArxivSearchProvider",
+                        lambda: object())
+    explicit = RagScope(user_id="u-direct")
+    with use_rag_scope(user_id="u-contextvar"):
+        researcher = Researcher(rag_scope=explicit)
+    assert researcher._rag_scope == explicit
+
+
+def test_worker_graph_factory_injects_rag_scope(monkeypatch):
+    """Worker 的默认 factory 带能力标记，并把 rag_scope 透传给 create_graph。"""
+    import web.backend.worker as worker_module
+
+    captured = {}
+
+    def fake_create_graph(checkpointer=None, rag_scope=None):
+        captured["checkpointer"] = checkpointer
+        captured["rag_scope"] = rag_scope
+        return object()
+
+    monkeypatch.setattr(worker_module, "create_graph", fake_create_graph)
+    factory = worker_module.make_graph_factory()
+    assert getattr(factory, "accepts_rag_scope", False) is True
+
+    scope = RagScope(user_id="u-worker-explicit", revision=3)
+    factory(rag_scope=scope)
+    assert captured["rag_scope"] is scope

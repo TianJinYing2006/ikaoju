@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, List, Optional
 from research_engine.evidence import serialize_evidence_index
 from research_engine.evidence_manifest import build_evidence_manifest  # 需求 35 R2
 from research_engine.graph import DeepResearchGraph, create_graph
-from research_engine.rag.scope import set_scope
+from research_engine.rag.scope import RagScope, set_scope
 from research_engine.report_stream import pop_report_sink, push_report_sink  # 需求 35 R4
 from research_engine.runtime_profile import (
     RuntimeProfile,
@@ -624,16 +624,21 @@ class RunManager:
             set_profile(profile)
             effective = effective_research_config()
 
-            # P5：把本 run 的所有者写进 RAG 检索作用域（须在 create_graph **之前**：
-            # Researcher 构建时捕获作用域，避免 LangGraph 并行线程丢失 ContextVar）；
+            # P5/R3（2026-11）：RAG 检索作用域**显式注入**（factory 支持时），
+            # 不再依赖「先 set_scope 再建图」的顺序 + ContextVar 继承；测试替身 /
+            # DemoGraph factory 无能力标记 ⇒ 保留旧 fallback 路径（行为不变）。
             # 修订号从任务库读（VectorStore 无此方法，缓存键必须拿真实修订号才失效）
             try:
                 rag_revision = self._store.get_rag_revision()
             except Exception:  # noqa: BLE001 —— 无库/替身缺方法时退化为 0
                 rag_revision = 0
-            set_scope(user_id=self.owner(run_id), revision=rag_revision)
-
-            graph = self._graph_factory()
+            rag_scope = RagScope(user_id=self.owner(run_id), revision=rag_revision)
+            factory = self._graph_factory
+            if getattr(factory, "accepts_rag_scope", False):
+                graph = factory(rag_scope=rag_scope)
+            else:
+                set_scope(user_id=rag_scope.user_id, revision=rag_scope.revision)
+                graph = factory()
             # 把跳数上限随 RUN_STARTED 下发 ⇒ 前端才能算**真实的**检索阶段进度
             # （depth / max_total_hops），而不是做一个只会动的假条。
             # 搜索源 / 学术检索同样下发 ⇒ 前端显示的是**实际生效**的配置，不是用户点的那个。

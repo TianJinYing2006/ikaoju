@@ -92,17 +92,18 @@ def _rag_confidence(rank: int) -> float:
 class Researcher:
     """单跳检索器（并行全工具）。"""
 
-    def __init__(self):
+    def __init__(self, rag_scope=None):
         # W9 接线修复：原先硬编码 BochaSearchProvider()，使 config.search.provider
         # （SEARCH_PROVIDER 环境变量）形同虚设 —— 配了 tavily 也仍走博查。
         # 改走工厂函数，搜索源真正可切换（博查额度耗尽时可切 Tavily）。
         self.search: SearchProvider = create_search_provider(config.search.provider)
         self.arxiv: ArxivSearchProvider = ArxivSearchProvider()
         self.retriever = HybridRetriever()
-        # 检索作用域在**构建时捕获**（runner/worker 在 create_graph 之前 set_scope）：
-        # LangGraph 并行执行节点时线程不继承 ContextVar，运行期 current_scope() 会丢；
-        # 捕获后由 _search_rag 显式传入，保证多租户过滤在任意线程都生效。
-        self._rag_scope = current_scope()
+        # P5/R3（2026-11）：检索作用域改为**显式构造参数**（create_graph(rag_scope=...)
+        # 由 runner/worker 传入）；contextvar 仅作旧调用/测试的兜底，主链路不再依赖
+        # 「先 set_scope 再建图」的顺序耦合。LangGraph 节点可能在线程池执行，显式传入
+        # 后 _search_rag 直接使用 self._rag_scope，不依赖线程继承 ContextVar。
+        self._rag_scope = rag_scope if rag_scope is not None else current_scope()
         # 需求 34 E1：抓取上下文同理在构建时捕获（runner/worker/cli 均在 create_graph 前绑定）；
         # 运行期再取一次兜底（测试/直连调用绑定晚于构建的场景）。
         self._fetch_ctx = current_fetch_context()

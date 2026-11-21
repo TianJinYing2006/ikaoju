@@ -148,13 +148,15 @@ def effective_per_subq_hop_cap(state: ResearchState, rc: Any = None) -> int:
 class DeepResearchGraph:
     """深度研究图（W1：显式 frontier 循环 + Critic 条件边）。"""
 
-    def __init__(self, checkpointer: Any = None):
+    def __init__(self, checkpointer: Any = None, *, rag_scope: Any = None):
         # 需求 35 R3（TBD-5）：checkpointer 可注入——Worker 传 PG saver（跨进程恢复）；
         # CLI/测试默认 None ⇒ MemorySaver（进程内，行为与历史一致）。
+        # 2026-11：rag_scope 显式注入（多租户检索作用域），主链路不再依赖
+        # 「先 set_scope 再建图」的 contextvar 顺序耦合；缺省时 Researcher 内部回退旧行为。
         self._checkpointer = checkpointer
         self.planner = Planner()
         self.clarifier = Clarifier()  # 需求 36 H1：澄清判定（仅开关打开时进入图）
-        self.researcher = Researcher()
+        self.researcher = Researcher(rag_scope=rag_scope)
         self.writer = Writer()
         self.validator = Validator()
         self.context = ContextManager()
@@ -963,6 +965,15 @@ class DeepResearchGraph:
                 self.tokens_diff = (LLMClient.tokens_total - token_base) - last_state.token_used
 
 
-def create_graph(checkpointer: Any = None) -> DeepResearchGraph:
-    """构建研究图；``checkpointer=None`` ⇒ MemorySaver（需求 35 R3：Worker 传 PG saver）。"""
-    return DeepResearchGraph(checkpointer=checkpointer)
+def create_graph(checkpointer: Any = None, *, rag_scope: Any = None) -> DeepResearchGraph:
+    """构建研究图；``checkpointer=None`` ⇒ MemorySaver（需求 35 R3：Worker 传 PG saver）。
+
+    2026-11：``rag_scope`` 显式传入多租户检索作用域（runner/worker 使用）；
+    工厂带 ``accepts_rag_scope`` 标记，供执行器做能力探测后选择显式注入或旧 fallback。
+    """
+    return DeepResearchGraph(checkpointer=checkpointer, rag_scope=rag_scope)
+
+
+#: 能力标记：执行器据此判断该 factory 是否支持 ``rag_scope=`` 显式注入
+#: （测试替身 / DemoGraph factory 没有该标记 ⇒ 走旧的 set_scope fallback）。
+create_graph.accepts_rag_scope = True
