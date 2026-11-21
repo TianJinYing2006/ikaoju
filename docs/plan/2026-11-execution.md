@@ -33,6 +33,7 @@
 | `（本轮）` | **contextvar 隐式依赖（RAG 作用域）显式化**：`create_graph(rag_scope=...)` / `Researcher(rag_scope=...)`；runner/worker 通过 `accepts_rag_scope` 能力标记显式注入，不再依赖「先 set_scope 再建图」的顺序；contextvar 仅作库函数/测试兜底 | `tests/test_rag_scope.py` 新增 3 例（显式优先于 contextvar、factory 透传、能力标记）；worker/loadtest 回归全绿 |
 | `（本轮）` | **类级 LLM 计数器（引擎运行期依赖）消除**：新增 `runtime/ledger.py`（run 级 `TokenLedger` + 进程级 run_id 注册表）；`create_graph/run/iter_run` 注入 `state.run_id` 并登记账本，LLM 记账按 run_id 写入；graph 输出 `last_ledger` 快照，`tokens_diff` 恒 None（旧字段仅兼容）；CLI 改打印 run 账本 | `tests/test_run_ledger.py` 7 例（累加/并发/注册表/按 run 隔离/无账本不崩）；HITL/Arm1/审计回归全绿 |
 | `（本轮）` | **ADR-0020**：记录「RAG 作用域显式注入 + run 级 TokenLedger」的背景/方案/取舍，含 msgpack checkpoint 教训；ADR 索引与 figures 计数同步 | `check_doc_consistency` ADR 索引 OK；figures「ADR 20 篇」 |
+| `（本轮）` | **删除 `LLMClient` 类级计数器**：`tokens_total/model_stats/role_stats/model_io_stats/_stats_lock/reset_stats` 全部移除（引擎与评测此前已不读）；Phase 1 无账本时改为**显式降级**（不写 phase1_global_stats.json）；`web/backend/followup` 追问成本改用临时 run 账本 | `test_eval_metrics` 两个计数用例改写为账本断言；`test_observability` 去掉计数器归零；新增 followup 账本测试；全量绿 |
 | `（本轮）` | **评测 Phase 2 judge 成本账本化**：`JudgeWithLedger` 包装裁判客户端（注入合成 `state.run_id`、注册独立账本、`close()` 注销）；`_summarize(judge_tokens=...)` 读取账本；Phase 2 不再 `reset_stats` / 读类级计数器 | `tests/test_eval_judge_scaffold.py` 新增 3 例；`test_status_naming`/`test_eval_provenance` 全绿 |
 | `（本轮）` | **评测 Phase 1 全局成本改逐 run 账本汇总**：raw 增加 `token_ledger` 快照；`merge_snapshots()` 汇总（source=per_run_ledger）；测试替身无账本时回退旧类级桶并标记 source | `tests/test_run_ledger.py` 新增 2 例（合并/空）；`test_eval_provenance`/`test_status_naming`/`test_arm5_quality_gate` 全绿 |
 | （本报告） | 文档：README 重写、执行报告 | `check_doc_consistency` 6/6 OK |
@@ -52,7 +53,7 @@
 | 阶段 0：README/文档数字校正 | ✅ 完成 | README 重写 + figures 回填 |
 | 阶段 1：figures 自动生成 + CI 守卫 | ✅ 完成 | 两层校验；结构事实（ADR/迁移/需求/测试文件/守卫清单/代码规模）机器校验 |
 | 阶段 1：评测 v2（固定证据池回放、跨模型族独立裁判、人工抽检、RAG 评测集） | ⚠️ 部分 | **脚手架已完成**：独立裁判配置/provenance/CLI + **网络检索确定性回放**（`SEARCH_PROVIDER=replay` / `--replay-dir`，含 14 例测试）；**实跑未做**：需要真实 API key 与预算，arXiv/RAG 的 replay 仍待做 |
-| 阶段 2：RunContext / per-run 隔离 / 节点写回 / 消除类级计数与 contextvar | ⚠️ 部分 | RunContext + 写回 + per-run 已完成；RAG 检索作用域已显式化；**引擎运行期与评测（Phase 1/2）均已不读类级 LLM 计数器**（run 级 `TokenLedger` + run_id 注册表 + judge 账本；`tokens_diff` 废弃）；**剩余**：`LLMClient` 类级计数器本体仍是遗留诊断 API（无人读取，待删）、runtime_profile/usage 的 contextvar 待显式化 |
+| 阶段 2：RunContext / per-run 隔离 / 节点写回 / 消除类级计数与 contextvar | ⚠️ 部分 | RunContext + 写回 + per-run 已完成；RAG 检索作用域已显式化；**类级 LLM 计数器已删除**（引擎/评测/追问全部走 run 级账本）；**剩余**：runtime_profile / usage 的 contextvar 待显式化 |
 | 阶段 3：后端拆分（app factory + routers + services + repositories） | ⚠️ 部分 | 完成**第一刀**：`help`/`legal` 只读路由拆到 `web/backend/api/meta.py`（`include_router` 装配，行为/路径不变），建立 `web/backend/api/` 薄路由层的模式；外加三处安全加固。`main.py` 仍 3,8xx 行，完整拆分方案与顺序见 §3 第 2 条 |
 | 阶段 4：coverage / mypy / pip-audit / Windows job / npm devDeps | ⚠️ 部分 | **coverage 门禁（3.13 档 ≥73%，实测 75%）与 Windows 专属安全测试 job 已接入**（本机 Windows 实测 `test_code_exec` 29 例 + `test_arm2_code_injection` 39 例全过）；pip-audit / mypy / npm devDeps 未做 |
 | 阶段 4：icon-lab / ppt-report 移出、github 元数据 | ⚠️ 部分 | 仓库卫生完成；GitHub description/homepage 需远端权限，未改 |

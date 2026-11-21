@@ -24,9 +24,9 @@
 
 | 指标 | 当前值 | 口径 / 定义 | 采集命令或来源 | 日期 |
 | --- | --- | --- | --- | --- |
-| 引擎代码 | 14,409 行 | `research_engine/**/*.py`，非空行（`ReadAllLines` 过滤空行，含注释） | 见 `tools/gen_figures.py` 同口径脚本 | 2026-11-22 |
-| 后端代码 | 14,026 行 | `web/backend/**/*.py`，同上 | 同上 | 2026-11-22 |
-| 测试代码 | 24,415 行 | `tests/**/*.py`，同上 | 同上 | 2026-11-22 |
+| 引擎代码 | 14,381 行 | `research_engine/**/*.py`，非空行（`ReadAllLines` 过滤空行，含注释） | 见 `tools/gen_figures.py` 同口径脚本 | 2026-11-22 |
+| 后端代码 | 14,053 行 | `web/backend/**/*.py`，同上 | 同上 | 2026-11-22 |
+| 测试代码 | 24,442 行 | `tests/**/*.py`，同上 | 同上 | 2026-11-22 |
 | 前端源码 | 9,112 行 | `web/frontend/src/**/*.{ts,tsx}`，同上 | 同上 | 2026-11-22 |
 | E2E 代码 | 1,957 行 | `web/frontend/e2e/**/*.ts`，同上 | 同上 | 2026-11-22 |
 | 测试文件 | 161 个 | `tests/*.py` | 目录计数（`tools/gen_figures.py --check` 校验） | 2026-11-22 |
@@ -35,8 +35,8 @@
 
 | 指标 | 当前值 | 口径 / 定义 | 采集命令或来源 | 日期 |
 | --- | --- | --- | --- | --- |
-| pytest 收集/执行 | **1559** 项 | 全量 `tests/`；`pytest --collect-only`（收集统计） | `py -3.13 -m pytest tests/ --collect-only` | 2026-11-22 |
-| 零依赖 lane（本机） | **1559 收集 / 1479 通过 / 81 跳过 / 0 失败** | 2026-11-22 本机复验（Python 3.13 + `.deps`）；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 | `py -3.13 -m pytest tests/ --tb=no` | 2026-11-22 |
+| pytest 收集/执行 | **1560** 项 | 全量 `tests/`；`pytest --collect-only`（收集统计） | `py -3.13 -m pytest tests/ --collect-only` | 2026-11-22 |
+| 零依赖 lane（本机） | **1560 收集 / 1480 通过 / 81 跳过 / 0 失败** | 2026-11-22 本机复验（Python 3.13 + `.deps`）；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 | `py -3.13 -m pytest tests/ --tb=no` | 2026-11-22 |
 | 跳过项性质 | 真实 PG/Redis 集成用例 | 由 CI `infra` job 通过 `DR_TEST_DATABASE_URL` / `DR_TEST_REDIS_URL` 强制执行 | `tests/conftest.py` | 2026-10-26 |
 | CI job 数 | 5 个定义 / **7 项检查** | lint-and-test（3.11/3.12/3.13 矩阵）+ infra + frontend + e2e + security-windows（Windows 专属安全路径） | `.github/workflows/ci.yml` | 2026-11-22 |
 | CI 守卫 | 6 个 | 评测产物白名单 / 前端边界 / 公开仓 IP / 文档漂移 / Tailwind token / UI 反模式 | `tools/check_*.py` | 2026-10-27 |

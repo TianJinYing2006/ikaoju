@@ -171,8 +171,6 @@ def test_chat_emits_generation_span_via_single_point(monkeypatch):
     exporter = _enable_with_memory(monkeypatch)
     from types import SimpleNamespace
 
-    LLMClient.tokens_total = 0
-
     def fake_create(**kwargs):
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))],
@@ -189,7 +187,6 @@ def test_chat_emits_generation_span_via_single_point(monkeypatch):
     gens = [s for s in exporter.get_finished_spans() if s.name.startswith("chat ")]
     assert len(gens) == 1
     assert gens[0].attributes["gen_ai.usage.total_tokens"] == 123
-    LLMClient.tokens_total = 0  # 还原
 
 
 # ---------- 脱敏 / 成本 / URL ----------

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import random
-import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -54,19 +53,12 @@ def _retry_delay_seconds(attempt: int) -> float:
 
 
 class LLMClient:
-    """OpenAI 兼容的 LLM 客户端，封装百炼 Qwen 调用。"""
+    """OpenAI 兼容的 LLM 客户端，封装百炼 Qwen 调用。
 
-    # W3（grill Q3=D'）：类级无条件计数（跨所有 agent 实例共享累计，不管 state 是否传入）。
-    # 按 run 对齐后与 state.token_used 差值为"漏传 state 的调用路径累计"——单点记账自动暴露漏计。
-    tokens_total = 0
-    # W5（grill Q2）：双轨分桶——模型名桶（成本 = Σ token×该模型单价）+ 职责桶（面试口径"critic 占 85%"）。
-    # 类级跨实例共享；eval run.py 在 Phase 1/2 各自开头调用 reset_stats() 隔离出研究/评估成本。
-    # model_io_stats 记 input/output 拆分，成本按 W3 pricing 分层精确加权（无需近似比例）。
-    model_stats: Dict[str, int] = {}
-    role_stats: Dict[str, int] = {}
-    model_io_stats: Dict[str, Dict[str, int]] = {}
-    # 并发记账锁（需求 19 / #76）：validator 分批并行时保护上方类级计数器与 state.token_used
-    _stats_lock = threading.Lock()
+    2026-11：不再维护类级全局计数器。token 统计走 run 级 ``TokenLedger``
+    （``state.run_id`` → ``runtime/ledger`` 注册表；judge 用独立账本），
+    ``state.token_used`` 仍是预算口径。这样并发 run / 评测 Phase 1/2 互不污染。
+    """
 
     def __init__(self, model: Optional[str] = None, role: Optional[str] = None):
         self.model = model or config.llm.smart_model
@@ -95,8 +87,8 @@ class LLMClient:
     ) -> str:
         """普通对话，返回文本内容。state 传入时把 token 用量累加进 state.token_used（Q6-B）。
 
-        W3（Q3=D' 修复）：_accumulate_usage **无条件**调用——tokens_total（类级）任何调用都累计；
-        state.token_used 仅当 state 非 None 时累计（内部判断）。跑完差值 = 漏传 state 的调用路径。
+        W3（Q3=D' 历史口径，2026-11 已废止）：曾用类级计数器对账漏传 state 的调用；
+        现在记账只走 ``state.token_used`` + run 级账本（``state.run_id``）。
         W5（Q4）：timeout 透传给 openai SDK（judge 调用设 60s 治"LLM 层无超时"僵尸源）。
         F13（审计）：调用前预算准入（`admit_call`）；未显式传 timeout 时使用默认值并按
         任务剩余时限收窄（时限已过抛 `DeadlineExceeded`，不发起调用）。
@@ -265,9 +257,9 @@ class LLMClient:
     def _accumulate_usage(self, resp, state, reservation=None) -> None:
         """把响应里的 token 用量累加进 state.token_used（Q6-B 可观测+控闸）。
 
-        W3（Q3=D'）：tokens_total（类级）**无条件**累加（不管 state 是否传入）；
-        state.token_used 只累加传 state 的调用。按 run 对齐后差值 = 漏传 state 的调用路径累计。
-        W5（Q2）：模型名桶 + 职责桶同步累加（双轨成本报告）。
+        2026-11：记账只走两条显式通道 —— ``state.token_used``（预算口径）与
+        run 级 ``TokenLedger``（按 ``state.run_id`` 查找）；不再维护类级全局计数器。
+        W5（Q2）：模型名桶 + 职责桶由账本提供（双轨成本报告）。
         审计 F06：区分「provider 缺 usage」（安全跳过）与「业务记账失败」——
         `emit_usage` 在 `DR_USAGE_STRICT=true` 下抛出的 `UsageSinkError` 绝不吞，
         按契约向调用方传播。
@@ -285,15 +277,6 @@ class LLMClient:
         except Exception:  # noqa: BLE001 —— provider usage 字段形态异常：按「无 usage」处理
             settle_call(reservation)
             return
-        # 需求 19 / #76：validator 分批并行后本方法会被多线程调用 →
-        # 类级计数与 state.token_used 的读-改-写必须加锁，否则并发丢账。
-        with LLMClient._stats_lock:
-            LLMClient.tokens_total += total  # D'：无条件（类级，跨实例共享）
-            LLMClient.model_stats[self.model] = LLMClient.model_stats.get(self.model, 0) + total
-            LLMClient.role_stats[self.role] = LLMClient.role_stats.get(self.role, 0) + total
-            io = LLMClient.model_io_stats.setdefault(self.model, {"input": 0, "output": 0})
-            io["input"] += inp
-            io["output"] += out
         # 2026-11：run 级账本（由 run_id 从 runtime 注册表查找）。运行期统计以账本为准，
         # 不再把「这次 run 用了多少」押在类级全局计数器上（并发 run 会互相污染）。
         ledger = None
@@ -316,13 +299,6 @@ class LLMClient:
         ))
 
     @staticmethod
-    def reset_stats() -> None:
-        """清零三个类级计数器（eval run.py Phase 1/2 各自开头调用，隔离研究/评估成本）。"""
-        LLMClient.tokens_total = 0
-        LLMClient.model_stats = {}
-        LLMClient.role_stats = {}
-        LLMClient.model_io_stats = {}
-
     def chat_json(
         self,
         messages: List[Dict[str, str]],

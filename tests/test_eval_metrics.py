@@ -221,23 +221,39 @@ class _FakeResp:
         self.choices = [MagicMock(message=MagicMock(content="ok"))]
 
 
-def test_client_stats_buckets():
-    LLMClient.reset_stats()
+def test_client_stats_go_to_run_ledger():
+    """2026-11：LLM 记账写入 run 级账本（类级计数器已删除）。"""
+    from research_engine.runtime import TokenLedger
+    from research_engine.runtime.ledger import register_ledger, unregister_ledger
+    from research_engine.state import ResearchState
+
+    run_id = "eval-metrics-ledger"
+    ledger = TokenLedger()
+    register_ledger(run_id, ledger)
+    try:
+        state = ResearchState(topic="t", run_id=run_id)
+        client = LLMClient(model="qwen-plus", role="critic")
+        with patch.object(client, "_get_client") as mock_get:
+            mock_get.return_value.chat.completions.create.return_value = _FakeResp()
+            client.chat([{"role": "user", "content": "hi"}], state=state)
+        snap = ledger.snapshot()
+        assert snap["by_model"] == {"qwen-plus": 100}
+        assert snap["by_role"] == {"critic": 100}
+        assert snap["by_model_io"] == {"qwen-plus": {"input": 80, "output": 20}}
+    finally:
+        unregister_ledger(run_id)
+
+
+def test_client_without_ledger_still_accounts_state():
+    """成员测试替身/旧调用：没有注册账本时仍记 state.token_used（不崩、不丢预算口径）。"""
+    from research_engine.state import ResearchState
+
+    state = ResearchState(topic="t")
     client = LLMClient(model="qwen-plus", role="critic")
     with patch.object(client, "_get_client") as mock_get:
         mock_get.return_value.chat.completions.create.return_value = _FakeResp()
-        client.chat([{"role": "user", "content": "hi"}])
-    assert LLMClient.model_stats["qwen-plus"] == 100
-    assert LLMClient.role_stats["critic"] == 100
-    assert LLMClient.model_io_stats["qwen-plus"] == {"input": 80, "output": 20}
-    assert LLMClient.tokens_total == 100
-
-
-def test_client_stats_reset():
-    LLMClient.reset_stats()
-    assert LLMClient.tokens_total == 0
-    assert LLMClient.model_stats == {}
-    assert LLMClient.role_stats == {}
+        client.chat([{"role": "user", "content": "hi"}], state=state)
+    assert state.token_used == 100
 
 
 # ---------- dataset 与 git 锚 ----------

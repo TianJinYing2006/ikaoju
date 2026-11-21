@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Optional, Set
 
 #: 追问文本上限（超限由 API 层 Pydantic 拒绝）
@@ -113,10 +114,19 @@ def _ask_llm(system: str, user: str) -> tuple[Dict[str, Any], int]:
     （usage_ledger 由调用方 push 的 store sink 记录，§12.3「沿用现有 usage sink」）。
     测试 monkeypatch 本函数即可零网络覆盖全部校验/记账路径。
     """
-    from research_engine.llm.client import LLMClient
     from research_engine.llm.router import get_router
+    from research_engine.runtime.ledger import TokenLedger, register_ledger, unregister_ledger
+    from research_engine.state import ResearchState
 
-    before = LLMClient.tokens_total
-    data = get_router().smart_json(system, user)
-    delta = int(LLMClient.tokens_total - before)
-    return (data if isinstance(data, dict) else {}), delta
+    # 2026-11：追问成本用**临时 run 级账本**统计（类级全局计数器已删除）：
+    # 注册合成 run_id → 把 state 传给 router（记账按 state.run_id 进账本）→ 读账本增量。
+    run_id = f"followup-{os.urandom(6).hex()}"
+    ledger = TokenLedger()
+    register_ledger(run_id, ledger)
+    try:
+        state = ResearchState(topic="followup", run_id=run_id)
+        data = get_router().smart_json(system, user, state=state)
+        delta = ledger.total
+    finally:
+        unregister_ledger(run_id)
+    return (data if isinstance(data, dict) else {}), int(delta)

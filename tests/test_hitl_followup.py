@@ -181,3 +181,22 @@ def test_followup_llm_failure_keeps_run(client, monkeypatch):
     assert row["token_used"] == before["token_used"]
     events = [e["event_type"] for e in store.get_events("fu-fail-0001")]
     assert events.count("FOLLOWUP_ASKED") == 1 and "FOLLOWUP_ANSWERED" not in events
+
+# ---------------------------------------------------------------- 2026-11 追问成本账本
+
+def test_ask_llm_returns_run_ledger_delta(monkeypatch):
+    """追问 token 增量来自临时 run 级账本（类级全局计数器已删除）。"""
+    from research_engine.runtime.ledger import ledger_for
+
+    class _FakeRouter:
+        def smart_json(self, system, user, state=None):
+            assert state is not None and state.run_id.startswith("followup-")
+            ledger = ledger_for(state.run_id)
+            assert ledger is not None
+            ledger.add(model="qwen-plus", role="smart", total_tokens=42)
+            return {"answer": "ok", "citations": []}
+
+    monkeypatch.setattr("research_engine.llm.router.get_router", lambda: _FakeRouter())
+    data, delta = followup_mod._ask_llm("system", "user")
+    assert data == {"answer": "ok", "citations": []}
+    assert delta == 42

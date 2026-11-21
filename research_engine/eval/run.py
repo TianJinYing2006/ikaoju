@@ -53,7 +53,6 @@ from research_engine.eval.status_keys import (
     read_metrics_status,
 )
 from research_engine.graph import create_graph
-from research_engine.llm.client import LLMClient
 from research_engine.runtime import merge_snapshots
 
 DEFAULT_DATASET = Path(__file__).resolve().parent / "dataset.jsonl"
@@ -200,8 +199,7 @@ def phase1(dataset: Dict[str, Any], run_dir: Path, concurrency: int) -> None:
 
     if pending:
         print(f"Phase 1: {len(pending)} 条待跑（并发 {concurrency}，已跳过 {len(rows) - len(pending)} 条）")
-        LLMClient.reset_stats()  # Q2/Q8：研究成本隔离（Phase 1 桶快照进 raw）
-        # 2026-11 修复（并发串台）：**不再**在进程级建一份共享 graph 再交给线程池。
+            # 2026-11 修复（并发串台）：**不再**在进程级建一份共享 graph 再交给线程池。
         # graph 由 _run_one 在每个线程内按需新建（per-run 实例），否则 Agent 的实例
         # 可变状态（validate 统计 / 降级缓冲）会在并发题之间互相串台。
         # W8 §10.4：整轮 run 只抓一次 provenance（跑批时刻的 git + config），按条目复用
@@ -244,20 +242,17 @@ def phase1(dataset: Dict[str, Any], run_dir: Path, concurrency: int) -> None:
                         json.dumps(res["raw"], ensure_ascii=False, indent=1), encoding="utf-8"
                     )
                     done_failed += 1
-        # 成本归因（2026-11）：优先用每 run 的 TokenLedger 快照汇总（并发安全、无全局计数污染）；
-        # 测试替身 graph 没有账本 ⇒ 回退旧的类级桶快照（标记 source 便于排查）。
+        # 成本归因（2026-11）：只信每 run 的 TokenLedger 快照汇总（并发安全、无全局计数）。
+        # 测试替身 graph 没有账本 ⇒ **不写** phase1_global_stats.json，让下游显式降级
+        # （宁可标注「无法按模型拆分成本」，也不伪造 0 或回退到已删除的类级计数器）。
         if any(isinstance(item, dict) for item in ledgers):
             global_stats = merge_snapshots(ledgers)
+            (run_dir / "phase1_global_stats.json").write_text(
+                json.dumps(global_stats, ensure_ascii=False, indent=1), encoding="utf-8"
+            )
         else:
-            global_stats = {
-                "model_stats": dict(LLMClient.model_stats),
-                "role_stats": dict(LLMClient.role_stats),
-                "model_io_stats": {k: dict(v) for k, v in LLMClient.model_io_stats.items()},
-                "source": "class_counters_legacy",
-            }
-        (run_dir / "phase1_global_stats.json").write_text(
-            json.dumps(global_stats, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
+            print("  [warn] 本批 raw 无 token_ledger 快照（测试替身/旧 graph）——"
+                  "跳过 phase1_global_stats.json，成本按显式降级处理")
         print(f"Phase 1 完成：完整 {done_ok} / 异常（failed+incomplete+timeout）{done_failed}")
     else:
         print("Phase 1: 全部已存在 raw，无需重跑")
@@ -475,7 +470,7 @@ def _summarize(
                 "metrics_mean": {}, "metrics_stderr": {}, "cost_total": {}, "struct": {},
                 "cost_phase1_total": cost_block,
                 "cost_degraded": cost_block["cost_degraded"],
-                "eval_tokens": judge_tokens if judge_tokens is not None else LLMClient.tokens_total,
+                "eval_tokens": judge_tokens,
                 # W8 Arm 6：provenance 全字段带出（含 git/config + 新增的
                 # prompt_hash / prompt_slots / scorer_version / 裁判模型 / 裁判独立性）
                 **{k: _prov.get(k) for k in RAW_PROVENANCE_KEYS}}
@@ -512,7 +507,7 @@ def _summarize(
         "metrics_mean": metrics_mean,
         "metrics_stderr": metrics_stderr,
         "cost_phase1_total": cost_block,
-        "cost_phase2_judge_tokens": judge_tokens if judge_tokens is not None else LLMClient.tokens_total,
+        "cost_phase2_judge_tokens": judge_tokens,
         # W8 §10.4 第 2 条 + Arm 6：provenance 全字段进 summary.json
         # （每轮都记，不再只写 baseline 一次；任何一份 summary 单独拿出来
         #  都能回答「这批数是谁裁的、用的哪套提示词」）
