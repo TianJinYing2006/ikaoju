@@ -17,7 +17,7 @@
 | Web 应用：FastAPI + SSE（AG-UI 语义）+ React 前端；取消/刷新恢复/导出 md/json/docx/PDF | `web/backend/`、`web/frontend/` |
 | 账号/配额/限流/多租户 RAG/内容安全/只读分享/用量账本 | `web/backend/{auth,store,rag_pipeline,moderation}.py` |
 | 部署与运维：compose（PG+Redis+MinIO+worker）、迁移只前向、备份→恢复演练 | `docker-compose.staging.yml`、`tools/backup.sh`、CI `infra` |
-| 质量基线：1531 收集 / 1451 通过 / 81 跳过；6 守卫；coverage 75% | 见 `docs/figures.md` §3 |
+| 质量基线：1560 收集 / 1480 通过 / 81 跳过；7 守卫；coverage 75%；mypy 增量门禁 | 见 `docs/figures.md` §3 |
 
 ## 2. 进行中（本次重构批次，已完成项）
 
@@ -26,7 +26,7 @@
 - 评测：figures 机器校验（`tools/gen_figures.py`，CI `--check`）；独立裁判脚手架（`--judge-model/--judge-family`，provenance 动态判定）。
 - 确定性回放：`SEARCH_PROVIDER=replay` + `--replay-dir`（固定检索输入，arXiv 同时关闭）。
 - 后端：`web/backend/api/meta.py` 薄路由层第一刀；重试输入安全闸、审计失败日志、Passkey 生产 fail-closed。
-- CI：coverage 门禁（3.13 档 ≥73%）、Windows 专属沙箱安全 job。
+- CI：coverage 门禁（3.13 档 ≥73%）、Windows 专属沙箱安全 job、mypy 增量门禁（runtime/replay/api）。
 - 仓库卫生：`icon-lab/`、`ppt-report/` 移出跟踪（本地保留）；README 重写为诚实口径。
 
 ## 3. 未完成 / 不宣称
@@ -38,12 +38,12 @@
 | 研究质量 | coverage ≈40%、uncited_fact_ratio ≈69%、信息不足标记 ≈74~79% —— 未达可宣称水平 |
 | 引擎彻底去隐式依赖（类级 LLM 计数 / contextvar） | 部分：RAG 作用域已显式注入；**类级 LLM 计数器已删除**（引擎/评测/追问走 run 级 TokenLedger + run_id 注册表；`tokens_diff` 废弃）；剩余：runtime_profile/usage contextvar |
 | 后端完整拆分（app factory + routers + services + repositories） | 仅完成 `api/meta.py` 样板 |
-| 剩余 CI 门禁（pip-audit / mypy 增量）、npm devDeps 审计 | 未做 |
+| pip-audit 与 npm devDeps 审计 | 未做（pip-audit 的 PyPI advisory 请求本机超时，无法本地验证；mypy 增量门禁已接入） |
 | 生产就绪 | 审核默认本地空词表、无邮箱验证/CAPTCHA、沙箱非恶意代码隔离 —— **不宣称生产级** |
 
 ## 4. 下一步优先级
 
 1. 评测 v2 实跑并冻结新基线（质量说服力的唯一来源）；
 2. 引擎隐式依赖收敛 + 后端按域拆分（每 PR 带契约测试）；
-3. pip-audit / mypy 增量门禁；
+3. pip-audit（需网络稳定后验证）与 npm devDeps 审计；
 4. 截图/90s demo 与 v0.3.0 发布。

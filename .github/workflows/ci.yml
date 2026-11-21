@@ -89,6 +89,14 @@ jobs:
       - name: figures 结构事实校验（generated JSON）
         run: python tools/gen_figures.py --check
 
+      # 2026-11：类型检查**增量**门禁 —— 只覆盖新增/重构包（runtime / replay / api），
+      # 不对 6.8 万行存量做全量 mypy（历史告警会淹没真问题，且冻结基线不允许大改）。
+      # 已验证：mypy 2.4.1 → 6 source files, Success。
+      - name: Type check (mypy, incremental packages)
+        run: >-
+          mypy --ignore-missing-imports --follow-imports=silent
+          research_engine/runtime research_engine/search/replay.py web/backend/api
+
       # 需求 38 F2：weasyprint 运行依赖（PDF 渲染测试真跑；字体含 CJK，保证中文可提取）
       # 2026-10-26：apt 慢源主要是 fonts-noto-cjk（61MB）。字体复用 e2e 的 deb 缓存；
       # pango 两库很小，保留 apt（先直装，失败再 update+重试）。step 超时 12 分钟兜底。

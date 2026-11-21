@@ -8,3 +8,4 @@ pytest-cov>=6.0.0
 # 已按当日追加拍板换为 uv（`uv pip compile --universal`）。
 # uv 是独立二进制而非 pip 依赖 ⇒ 刻意不进本文件，避免把 build/wheel/pyproject-hooks
 # 等 8 个包拖进 CI 安装树。生成锁的命令逐字记录在两份 lock 的文件头里。
+mypy>=1.10
