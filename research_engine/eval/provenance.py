@@ -177,6 +177,35 @@ CITATION_JUDGE_NOTE = (
 )
 
 
+def citation_judge_is_independent() -> bool:
+    """裁判是否**可证明**独立于被测链路（2026-11 独立裁判脚手架）。
+
+    判据（全部满足才为 True，不做推断）：
+    1. 显式配置了 `config.eval.judge_model`（默认空 = 回落 smart_model，属旧口径）；
+    2. 显式声明了 `config.eval.judge_family`；
+    3. 声明的模型族与主链路（validator / smart）的模型族不同。
+
+    模型族按模型名前缀取（`qwen-plus` → `qwen`）；无法确定即判 False ——
+    「不能证明的独立性」不得写进 provenance。
+    """
+    from config import config as _cfg
+
+    judge_model = (_cfg.eval.judge_model or "").strip()
+    judge_family = (_cfg.eval.judge_family or "").strip().lower()
+    if not judge_model or not judge_family:
+        return False
+    try:
+        from research_engine.agents.validator import validator_model_name
+
+        main_models = {validator_model_name(), _cfg.llm.smart_model}
+    except Exception:  # noqa: BLE001 —— provenance 不得因客户端构造失败而崩溃
+        main_models = {_cfg.llm.smart_model}
+    main_families = {
+        model.strip().lower().split("-")[0] for model in main_models if model
+    }
+    return judge_family not in main_families
+
+
 def judge_provenance() -> Dict[str, Any]:
     """裁判侧 provenance（W8 Arm 6）：**谁裁的、裁得独不独立**。
 
@@ -192,7 +221,7 @@ def judge_provenance() -> Dict[str, Any]:
     return {
         "citation_judge_model": validator_model_name(),
         "coverage_judge_model": judge_model_name(),
-        "citation_judge_independent": CITATION_JUDGE_INDEPENDENT,
+        "citation_judge_independent": citation_judge_is_independent(),
     }
 
 

@@ -399,6 +399,19 @@ class McpConfig:
 
 
 @dataclass
+class EvalConfig:
+    """评测侧配置（2026-11：独立裁判脚手架）。
+
+    - ``judge_model``：引用/覆盖度裁判使用的模型；空 = 回落 ``smart_model``（旧口径）。
+    - ``judge_family``：裁判模型族（如 qwen / deepseek / gpt），仅用于**声明**独立性。
+      独立性不从模型名猜测：未显式配置 judge_model 或未声明不同模型族时，
+      provenance 的 ``citation_judge_independent`` 一律为 False（不宣称无法证明的事）。
+    """
+    judge_model: str = field(default_factory=lambda: _env("DR_EVAL_JUDGE_MODEL"))
+    judge_family: str = field(default_factory=lambda: _env("DR_EVAL_JUDGE_FAMILY"))
+
+
+@dataclass
 class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
@@ -413,6 +426,7 @@ class Config:
     report_stream: ReportStreamConfig = field(default_factory=ReportStreamConfig)
     hitl: HitlConfig = field(default_factory=HitlConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
+    eval: EvalConfig = field(default_factory=EvalConfig)
 
 
 config = Config()

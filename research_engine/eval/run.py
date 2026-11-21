@@ -538,6 +538,20 @@ def _latest_run_dir() -> Path:
     return runs[-1]
 
 
+def _apply_judge_overrides(args: argparse.Namespace) -> None:
+    """CLI 独立裁判覆盖（2026-11 独立裁判脚手架）。
+
+    只覆盖进程内 config，不写回 env；provenance 会按覆盖后的
+    ``config.eval.judge_model/judge_family`` 记录并判定独立性。
+    """
+    judge_model = (getattr(args, "judge_model", None) or "").strip()
+    judge_family = (getattr(args, "judge_family", None) or "").strip()
+    if judge_model:
+        _config.eval.judge_model = judge_model
+    if judge_family:
+        _config.eval.judge_family = judge_family
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="W5 eval 两阶段管线")
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
@@ -548,12 +562,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--timeout-s", type=float, default=TASK_TIMEOUT_S, dest="timeout_s")
     parser.add_argument("--force-revalidate", action="store_true", help="Q8 逃生门：强制重新 running validator 校验")
     parser.add_argument(
+        "--judge-model",
+        default=None,
+        help="评测裁判模型（独立裁判脚手架）；不设则回落 smart_model。"
+             "与 --judge-family 一起显式配置且模型族不同时，provenance 才标记 independent=true。",
+    )
+    parser.add_argument(
+        "--judge-family",
+        default=None,
+        help="裁判模型族声明（如 qwen / deepseek / gpt）；用于 provenance 独立性判定，不做推断。",
+    )
+    parser.add_argument(
         "--thresholds-json",
         default=None,
         help="Arm 5 §5.5.1 质量闸阈值（JSON 对象，覆盖默认组）；"
              "字段：completion_rate_min / citation_accuracy_min / avg_steps_min / failed_ratio_max",
     )
     args = parser.parse_args(argv)
+    _apply_judge_overrides(args)
 
     if not args.dataset.exists():
         raise SystemExit(f"dataset 不存在：{args.dataset}（先用 --dataset 指定或构建 dataset.jsonl）")

@@ -252,7 +252,10 @@ def judge_model_name(cfg=None) -> str:
     from config import config as _cfg
 
     c = cfg if cfg is not None else _cfg
-    return c.llm.smart_model
+    # 2026-11：独立裁判脚手架——显式配置 DR_EVAL_JUDGE_MODEL / --judge-model 时优先使用；
+    # 未配置回落 smart_model（旧口径，provenance 会标记非独立）。
+    judge_model = getattr(getattr(c, "eval", None), "judge_model", "") or ""
+    return judge_model.strip() or c.llm.smart_model
 
 
 def compute_coverage(

@@ -131,11 +131,13 @@ docs/                # 需求 45 篇、ADR 19 篇、评测结论、运维 runboo
 
 | 指标 | 当前值 | 采集口径 / 日期 |
 | --- | --- | --- |
-| 单元测试 | **1527 项**（2026-11-22 本机 Python 3.13 + 锁定依赖：1446 通过 / 81 跳过 / 0 失败） | `pytest --collect-only`；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 |
+| 单元测试 | **1531 项**（2026-11-22 本机 Python 3.13 + 锁定依赖：1451 通过 / 81 跳过 / 0 失败） | `pytest --collect-only`；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 |
 | 浏览器 E2E | **89 个用例 / 21 个 spec** | `npx playwright test --list`；desktop + mobile 双 project，`DR_DEMO=1` |
 
-- **CI**：ruff + Python 3.11/3.12/3.13 矩阵 + frontend（tsc / vitest / 生产依赖审计 / build）+
-  infra（真实 PostgreSQL/Redis、迁移幂等、结构断言、**备份→清库→恢复演练**）+ e2e（官方 Chromium）。
+- **CI**：ruff + Python 3.11/3.12/3.13 矩阵（3.13 档带 **coverage 门禁 ≥73%**）+
+  frontend（tsc / vitest / 生产依赖审计 / build）+ infra（真实 PostgreSQL/Redis、迁移幂等、
+  结构断言、**备份→清库→恢复演练**）+ e2e（官方 Chromium）+
+  **security-windows**（Windows 专属沙箱安全路径，Linux 上会被 skip）。
 - **仓库守卫（6 个）**：评测产物白名单 ≡ git 跟踪、前端不得 import 引擎、公开仓真实 IP 扫描、
   文档/数字一致性（含 ADR 索引与 figures）、Tailwind token、UI 反模式；
   `tools/gen_figures.py --check` 额外机器校验 figures 里的结构事实。

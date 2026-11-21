@@ -134,7 +134,36 @@ jobs:
           sudo dpkg -i "$pkg_dir"/*.deb
 
       - name: Test (pytest)
-        run: pytest tests/ -q --durations=10
+        run: |
+          # 2026-11：覆盖率门禁只在一档（3.13）跑一次，避免三档重复计费；
+          # 阈值 73% 基于 2026-11-22 本机实测 75%（留 2pp 环境抖动余量）。
+          COV_ARGS=""
+          if [ "${{ matrix.python-version }}" = "3.13" ]; then
+            COV_ARGS="--cov=research_engine --cov=web --cov-fail-under=73 --cov-report=term"
+          fi
+          pytest tests/ -q --durations=10 $COV_ARGS
+
+  # 2026-11：Windows 专属安全路径（Windows Job Object / winreg / 8.3 路径等）
+  # 在 ubuntu 上会被 skip ⇒ 单独 job 真跑，避免「安全测试只在 Linux 绿」。
+  security-windows:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements-lock.txt
+            requirements-dev-lock.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-lock.txt -r requirements-dev-lock.txt
+      - name: Sandbox security tests (Windows-only paths)
+        run: python -m pytest tests/test_code_exec.py tests/test_arm2_code_injection.py -q
 
   # P1/P2（L3-A 部署底座与持久化）：
   # - compose 校验 / 迁移幂等 / 迁移结构断言 / API 镜像构建（P1 + P2-A）

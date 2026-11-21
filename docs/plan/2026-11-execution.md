@@ -6,7 +6,7 @@
 
 ## 0. 一句话结论
 
-**阶段 0（止血）全部完成；阶段 1 的 figures 自动校验完成、评测 v2 只完成了隔离基础；阶段 2 完成了 RunContext / 节点写回 / 评测并发隔离这三个高风险核心，完整 ports 化与 contextvar 去除未做；阶段 3 后端拆分完成第一刀（`api/meta.py` 薄路由层）与三处安全加固，完整拆分未做；阶段 4 只完成了仓库卫生与 figures 守卫；阶段 5 完成 README 重写与本报告。** 计划中依赖外部条件（API key 跑评测、真实浏览器截图/录屏、GitHub runner 验证、生产部署权限）的项未完成，均如实登记在 §3。
+**阶段 0（止血）全部完成；阶段 1 的 figures 自动校验与独立裁判脚手架完成、评测 v2 实跑未完成；阶段 2 完成了 RunContext / 节点写回 / 评测并发隔离这三个高风险核心，类级计数与 contextvar 去除未做；阶段 3 后端拆分完成第一刀（`api/meta.py` 薄路由层）与三处安全加固，完整拆分未做；阶段 4 完成仓库卫生、coverage 门禁与 Windows 沙箱 job，pip-audit/mypy 未加；阶段 5 完成 README 重写与本报告。** 计划中依赖外部条件（API key 跑评测、真实浏览器截图/录屏、GitHub runner 验证、生产部署权限）的项未完成，均如实登记在 §3。
 
 全量测试：**1527 收集 / 1446 通过 / 81 跳过 / 0 失败**（Python 3.13 + `.deps`，2026-11-22 本机）。
 6 个仓库守卫 + `tools/gen_figures.py --check` 全部通过。
@@ -26,6 +26,8 @@
 | `17f3c6b` | **ADR-0019**：RunContext / 节点写回 / per-run 隔离的背景、方案、取舍、影响；figures ADR 计数 18→19 | `check_doc_consistency` ADR 索引 OK |
 | `7b11af2` | **仓库卫生**：`icon-lab/`（44 文件）、`ppt-report/`（33 文件）移出 git 跟踪（本地文件保留），`.tmp/` 忽略 | `gen_figures --check`；`git status` 干净（除用户本地未跟踪目录） |
 | `（本次）` | **后端拆分第一刀**：`help`/`legal` 只读路由 → `web/backend/api/meta.py`（`include_router` 装配，路径/行为不变），建立 `api/` 薄路由层模式；main.py 减少约 55 行 | `tests/test_moderation_api.py`、`tests/test_web_guardrails.py`、`tests/test_auth_api.py` 全绿 |
+| `（本轮）` | **独立裁判脚手架**：新增 `config.eval`（`DR_EVAL_JUDGE_MODEL` / `DR_EVAL_JUDGE_FAMILY`）、`judge_model_name` 优先读显式配置、`citation_judge_is_independent()` 动态判定、eval CLI `--judge-model/--judge-family` | `tests/test_eval_judge_scaffold.py`（6 例）+ 原 provenance 测试全绿 |
+| `（本轮）` | **CI 质量门禁**：3.13 档 coverage ≥73%（实测 75.01%）、`security-windows` job（Windows 专属沙箱安全路径）；`pytest-cov` 进 dev 依赖与 lock | 本机 coverage 命令 exit 0；Windows 上 `test_code_exec` 29 例 + `test_arm2_code_injection` 39 例全过；CI YAML `yaml.safe_load` 通过 |
 | （本报告） | 文档：README 重写、执行报告 | `check_doc_consistency` 6/6 OK |
 
 另外：
@@ -42,23 +44,24 @@
 | 阶段 0：4 个矛盾缺口修复 + 回归测试 | ✅ 完成 | 4/4，均带回归测试 |
 | 阶段 0：README/文档数字校正 | ✅ 完成 | README 重写 + figures 回填 |
 | 阶段 1：figures 自动生成 + CI 守卫 | ✅ 完成 | 两层校验；结构事实（ADR/迁移/需求/测试文件/守卫清单/代码规模）机器校验 |
-| 阶段 1：评测 v2（固定证据池回放、跨模型族独立裁判、人工抽检、RAG 评测集） | ⚠️ 未完成 | 需要真实 API key 与评测预算；本机无法产出可信新基线。仅完成并发隔离（评测数据可信度的前置）。方案已写入 ADR-0019 §方案 4 与本报告 §4 |
+| 阶段 1：评测 v2（固定证据池回放、跨模型族独立裁判、人工抽检、RAG 评测集） | ⚠️ 部分 | **独立裁判脚手架已完成**：`DR_EVAL_JUDGE_MODEL` / `DR_EVAL_JUDGE_FAMILY` + CLI 覆盖，provenance 按「显式配置 + 不同模型族」动态判定独立性（默认仍 False），6 例测试；**实跑未做**：需要真实 API key 与预算 |
 | 阶段 2：RunContext / per-run 隔离 / 节点写回 / 消除类级计数与 contextvar | ⚠️ 部分 | RunContext + 写回 + per-run 已完成；**类级 LLM 计数与 contextvar 仍是现状**（全仓 300+ 调用点，拆改需逐模块回归，超出单晚安全范围） |
 | 阶段 3：后端拆分（app factory + routers + services + repositories） | ⚠️ 部分 | 完成**第一刀**：`help`/`legal` 只读路由拆到 `web/backend/api/meta.py`（`include_router` 装配，行为/路径不变），建立 `web/backend/api/` 薄路由层的模式；外加三处安全加固。`main.py` 仍 3,8xx 行，完整拆分方案与顺序见 §3 第 2 条 |
-| 阶段 4：coverage / mypy / pip-audit / Windows job / npm devDeps | ❌ 未做 | 需先本地安装并跑通工具（`.deps` 未含 pytest-cov/mypy），否则加进 CI 是不负责任的「红门禁」；登记为下一步 |
+| 阶段 4：coverage / mypy / pip-audit / Windows job / npm devDeps | ⚠️ 部分 | **coverage 门禁（3.13 档 ≥73%，实测 75%）与 Windows 专属安全测试 job 已接入**（本机 Windows 实测 `test_code_exec` 29 例 + `test_arm2_code_injection` 39 例全过）；pip-audit / mypy / npm devDeps 未做 |
 | 阶段 4：icon-lab / ppt-report 移出、github 元数据 | ⚠️ 部分 | 仓库卫生完成；GitHub description/homepage 需远端权限，未改 |
 | 阶段 5：README 重写 + 截图 + 90s demo | ⚠️ 部分 | README 完成；截图/录屏未做（需构建前端 + 真实浏览器会话，未在本晚执行；`DR_DEMO=1` 路径可复现） |
 | 发布 v0.3.0 / 合并 dev / 推送 | ❌ 未做 | 明确不推送、不合入（遵守仓库「禁止直推 dev」纪律，且需人工 review） |
 
 ## 3. 未完成项与原因（如实登记）
 
-1. **评测 v2**：需要调用外部模型产生真实数据；本机无 API key，且仓库纪律要求「先冻结代码/配置/数据集再跑基线」。
-   强行用假数据产出「新基线」会污染 figures 的可信度，因此不做。
+1. **评测 v2 实跑**：需要调用外部模型产生真实数据；本机无 API key，且仓库纪律要求「先冻结代码/配置/数据集再跑基线」。
+   强行用假数据产出「新基线」会污染 figures 的可信度，因此只完成**脚手架**（显式裁判配置 + provenance 动态独立性判定 + CLI + 测试），不产出数字。
+   拿到 key 后按「固定证据池回放 + 跨模型族裁判 + 50 条人工抽检 + RAG 20 题集」执行。
 2. **后端拆分**：`web/backend/main.py` 3,846 行、66 个路由，与 `store`/`manager` 等模块级单例深度耦合；
    一次机械搬移的回归面不可控。建议按域分 6 个 PR（auth → runs/stream → rag → export/share → ops/meta → worker/runner），
    每 PR 先建 `web/backend/api/<domain>.py` 薄 router，再加契约测试。
-3. **覆盖率/类型/依赖扫描**：需先安装并清理存量告警（mypy 对 6.8 万行全量必然大面积报错），
-   建议先加 **coverage（门槛 70% 起）+ pip-audit**，mypy 只对新增 `research_engine/runtime/` 与 `web/backend/api/` 生效。
+3. **覆盖率/类型/依赖扫描**：coverage 门禁（73%）与 Windows 安全 job 已接入；剩余 **pip-audit**（需先接受存量告警策略）
+   与 **mypy**（对 6.8 万行全量必然大面积报错，建议只对 `research_engine/runtime/`、`web/backend/api/` 新包增量生效）。
 4. **截图/录屏**：需要 `npm ci && npm run build` 后用 Playwright 截 4 个真实页面；本晚优先保证代码与测试，
    该产物留待有浏览器环境时补。
 5. **Windows 沙箱测试进 CI**：GitHub-hosted runner 有 windows-latest，但当前 workflow 未配置；
@@ -69,7 +72,7 @@
 1. **补评测 v2**（1~2 天，需 API key）：固定证据池回放 + 跨模型族裁判 + 50 条人工标注 + RAG 20 题集；
    重采一次基线后，把 figures 的「引用准确率」从多口径并列改为「当前口径 + 区间」。
 2. **后端拆分**（1~2 周）：按 §3.2 的 6 个 PR 顺序；先抽 `web/backend/api/meta.py`（legal/help/feedback，无状态耦合）做样板。
-3. **补 CI 质量门禁**（半天~1 天）：coverage + pip-audit + Windows job；mypy 增量。
+3. **剩余 CI 质量门禁**（半天）：pip-audit + mypy 增量（coverage 与 Windows job 已完成）。
 4. **呈现补齐**（半天）：4 张截图 + 90 秒 demo；GitHub description/homepage。
 5. **剩余 contextvar/类级计数收敛**（2~3 天）：在每个域拆分 PR 中顺带改为显式依赖，不做一次性大爆炸。
 
@@ -99,7 +102,11 @@ py -3.13 tools/check_doc_consistency.py
 → 6 项 [OK]（figures tag / ICP / CI 守卫清单 / 开放注册口径 / ADR 索引 / README 数字 == figures）
 
 py -3.13 tools/gen_figures.py --check
-→ 结构事实全部 [OK]（ADR 19 / 需求 45 / 迁移 31+31 / 测试文件 158 / Python 315 文件 68,426 行 / 守卫 6）
+→ 结构事实全部 [OK]（ADR 19 / 需求 45 / 迁移 31+31 / 测试文件 159 / Python 文件数与行数 / 守卫 6）
 
-py -3.13 -m ruff check .（提交前逐文件执行；本报告生成后最终全量复跑见下）
+py -3.13 -m pytest tests/ --tb=no -q --cov=research_engine --cov=web --cov-fail-under=73
+→ 1451 passed, 81 skipped；coverage 75.01%，Required test coverage of 73% reached
+
+Windows 本机：py -3.13 -m pytest tests/test_code_exec.py tests/test_arm2_code_injection.py -q
+→ 29 + 39 passed（对应 CI security-windows job）
 ```
