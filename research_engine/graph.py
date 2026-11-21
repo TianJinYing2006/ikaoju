@@ -617,8 +617,11 @@ class DeepResearchGraph:
         return {
             "report": report,
             "working_findings": working,  # 编号协议基准（Writer/Validator/Render 共用）
-            # W8 Arm 1：writer 降级记录（如 LLM 失败走兜底报告）交给 reducer
-            "degradation_log": self.writer.drain_degradations(),
+            # W8 Arm 1：writer 降级记录（如 LLM 失败走兜底报告）交给 reducer；
+            # 2026-11：compress 的降级（LLM/解析失败 → 回退原文）同样入账，不再静默。
+            "degradation_log": (
+                self.writer.drain_degradations() + self.context.drain_degradations()
+            ),
             "status": "writing",
             "token_used": state.token_used,  # Q6-B：writer+compress 的 LLM token 累计写回
             "progress": [{"stage": "write",

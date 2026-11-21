@@ -103,3 +103,67 @@ def test_compress_same_source_same_sq_still_merges(monkeypatch):
     compressed = ContextManager(max_findings=30).compress(findings, "主题")
 
     assert len(compressed) == 1 and compressed[0].sq_id == "q1"
+
+
+# ---------------------------------------------------------------- 2026-11 修复
+# 压缩失败 → 回退原文必须留痕（此前 `except Exception: compressed.extend(group)`
+# 静默吞掉，run_status 仍为 success，与「故障可归因」冲突）。
+
+def test_compress_failure_records_degradation(monkeypatch):
+    """LLM/解析失败时保持原文，并把降级记录进 DegradationSink。"""
+    class _Router:
+        def fast_chat(self, system, user, state=None):
+            raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(manager_module, "get_router", lambda: _Router())
+    findings = [
+        ResearchFinding(content=f"材料 {i}", source="rag:doc.md",
+                        source_type="rag", confidence=0.6, sq_id="q1")
+        for i in range(31)
+    ]
+
+    manager = ContextManager(max_findings=30)
+    compressed = manager.compress(findings, "主题")
+
+    assert len(compressed) == 31, "失败时必须回退未压缩原文"
+    degraded = manager.drain_degradations()
+    assert len(degraded) == 1
+    entry = degraded[0]
+    assert entry.reason == "llm_error"
+    assert entry.fallback_action == "raw_findings"
+    assert entry.node == "context"
+    assert "RuntimeError" in entry.detail
+    # drain 语义：取走即清空
+    assert manager.drain_degradations() == []
+
+
+def test_write_node_surfaces_compression_degradation(monkeypatch):
+    """graph._write 必须把 compress 的降级带进 state.degradation_log。"""
+    from research_engine.graph import DeepResearchGraph
+    from research_engine.state import ResearchState
+
+    class _Router:
+        def fast_chat(self, system, user, state=None):
+            raise RuntimeError("provider exploded")
+
+    monkeypatch.setattr(manager_module, "get_router", lambda: _Router())
+
+    g = DeepResearchGraph()
+    g.writer.write = lambda topic, subs, working, state: "# 报告\n结论"
+    state = ResearchState(
+        topic="主题",
+        findings=[
+            ResearchFinding(content=f"材料 {i}", source="rag:doc.md",
+                            source_type="rag", confidence=0.6, sq_id="q1")
+            for i in range(31)
+        ],
+    )
+
+    delta = g._write(state)
+
+    assert delta["report"]
+    log = delta["degradation_log"]
+    assert len(log) == 1
+    assert log[0].reason == "llm_error"
+    assert log[0].fallback_action == "raw_findings"
+

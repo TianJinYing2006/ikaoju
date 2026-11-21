@@ -10,8 +10,9 @@ from typing import Any, List
 from config import config
 from research_engine.budget import CallAdmissionDenied, admit_call, budget_remaining
 from research_engine.evidence import evidence_group_key  # 需求 35 R1：版本化身份分组键
+from research_engine.failure_reasons import FailureReason
 from research_engine.llm.router import get_router
-from research_engine.state import ResearchFinding, SubQuestion
+from research_engine.state import DegradationEntry, DegradationSink, ResearchFinding, SubQuestion
 from research_engine.usage import UsageSinkError
 
 
@@ -20,6 +21,14 @@ class ContextManager:
 
     def __init__(self, max_findings: int = 30):
         self.max_findings = max_findings
+        # 2026-11 修复：压缩失败此前被 `except Exception: compressed.extend(group)`
+        # 静默吞掉 —— 策略被绕过但 run_status 仍是 success，与「故障可归因」冲突。
+        # 现在统一走 DegradationSink，由 graph._write 节点 drain 进 state.degradation_log。
+        self.degradations = DegradationSink()
+
+    def drain_degradations(self) -> List[DegradationEntry]:
+        """取走并清空本管理器产生的降级记录（graph 节点调用）。"""
+        return self.degradations.drain_degradations()
 
     def dedupe(self, findings: List[ResearchFinding]) -> List[ResearchFinding]:
         """按来源去重，保留置信度高的。"""
@@ -111,7 +120,16 @@ class ContextManager:
             except UsageSinkError:
                 # F06：strict 记账失败必须上抛（不得静默改用未压缩原文）
                 raise
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                # 压缩失败 ⇒ 回退未压缩原文是**降级**，不是无事发生：必须留痕，
+                # 否则 run_status 会显示 success 而压缩策略实际被绕过（2026-11 修复）。
+                self.degradations._record_degradation(
+                    component="llm",
+                    reason=FailureReason.LLM_ERROR.value,
+                    detail=f"{type(exc).__name__}: {str(exc)[:200]}",
+                    fallback_action="raw_findings",
+                    node="context",
+                )
                 compressed.extend(group)
 
         return compressed
