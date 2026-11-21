@@ -196,16 +196,20 @@ def make_graph_factory(checkpointer: Any = None) -> Callable[[], Any]:
 
         return factory
 
-    def factory(rag_scope: Any = None) -> DeepResearchGraph:
-        # 只在显式传作用域时使用新关键字参数：兼容既有的 create_graph 替身/旧签名。
-        if rag_scope is None:
-            return create_graph(checkpointer=checkpointer)
-        return create_graph(checkpointer=checkpointer, rag_scope=rag_scope)
+    def factory(rag_scope: Any = None, profile: Any = None) -> DeepResearchGraph:
+        # 只在显式传参时使用新关键字参数：兼容既有的 create_graph 替身/旧签名。
+        kwargs: dict[str, Any] = {}
+        if rag_scope is not None:
+            kwargs["rag_scope"] = rag_scope
+        if profile is not None:
+            kwargs["profile"] = profile
+        return create_graph(checkpointer=checkpointer, **kwargs)
 
-    # P5/R3（2026-11）：能力标记——worker 显式注入 RAG 作用域，不再依赖
-    # 「先 set_scope 再建图」的 ContextVar 顺序；loadtest 的 DemoGraph factory 无此标记，
-    # 走旧 fallback（DemoGraph 不检索 RAG）。
+    # P5/R3（2026-11）：能力标记——worker 显式注入 RAG 作用域与运行档位，不再依赖
+    # 「先 set_scope/set_profile 再建图」的 ContextVar 顺序；loadtest 的 DemoGraph factory
+    # 无此标记，走旧 fallback（DemoGraph 不检索 RAG、不读档位）。
     factory.accepts_rag_scope = True
+    factory.accepts_profile = True
     return factory
 
 
@@ -695,7 +699,7 @@ class Worker:
                  report_buffer: Any = None) -> None:
         request = row.get("request") or {}
         topic = row["topic"]
-        self._apply_profile(request)
+        profile = self._apply_profile(request)
         # P5/R3（2026-11）：RAG 作用域显式注入（factory 支持时）；否则保留旧 fallback。
         # 修订号从任务库读（缓存键必须拿真实修订号，上传/删除后才会失效）
         try:
@@ -704,8 +708,13 @@ class Worker:
             rag_revision = 0
         rag_scope = RagScope(user_id=row.get("user_id"), revision=rag_revision)
         factory = self._graph_factory
+        graph_kwargs = {}
         if getattr(factory, "accepts_rag_scope", False):
-            graph = factory(rag_scope=rag_scope)
+            graph_kwargs["rag_scope"] = rag_scope
+        if getattr(factory, "accepts_profile", False):
+            graph_kwargs["profile"] = profile  # 2026-11：档位显式注入
+        if graph_kwargs:
+            graph = factory(**graph_kwargs)
         else:
             set_scope(user_id=rag_scope.user_id, revision=rag_scope.revision)
             graph = factory()
@@ -988,9 +997,10 @@ class Worker:
             _log(f"persist crash for {run_id} failed: {type(persist_exc).__name__}: {persist_exc}")
 
     @staticmethod
-    def _apply_profile(request: dict[str, Any]) -> None:
+    def _apply_profile(request: dict[str, Any]) -> Any:
         """把 run 创建时固化的档位快照装进本线程运行作用域（P0 profile 固化）。
 
+        返回解析出的 profile（无快照/旧行 ⇒ None），供执行器显式注入图。
         旧行（P3 之前创建，request 里只有 max_total_hops 等覆盖字段）不回放
         客户端覆盖值：快照缺失时按全局 config 运行（安全默认），
         超时 / 单次预算仍按该行已落库的 `timeout_at` / `budget_limit_cny` 生效。
@@ -998,11 +1008,13 @@ class Worker:
         snapshot = request.get("profile")
         if isinstance(snapshot, dict):
             try:
-                set_profile(RuntimeProfile.from_snapshot(snapshot))
-                return
+                profile = RuntimeProfile.from_snapshot(snapshot)
+                set_profile(profile)
+                return profile
             except (KeyError, TypeError):
                 pass
         set_profile(None)
+        return None
 
 
 def main() -> int:

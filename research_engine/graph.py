@@ -47,7 +47,7 @@ from research_engine.render import ReportRenderer
 from research_engine.repair import repair_report  # F11（3b）：有界返工
 from research_engine.runtime import new_run_context, with_token_writeback
 from research_engine.runtime.ledger import register_ledger, unregister_ledger
-from research_engine.runtime_profile import effective_research_config
+from research_engine.runtime_profile import effective_research_config, use_profile
 from research_engine.self_check import run_delivery_self_check  # 需求 34 E4：交付自检
 from research_engine.state import ResearchState, SubQuestion
 from research_engine.streaming import (  # W9（需求 9 §7.1）：流式运行载体
@@ -148,12 +148,14 @@ def effective_per_subq_hop_cap(state: ResearchState, rc: Any = None) -> int:
 class DeepResearchGraph:
     """深度研究图（W1：显式 frontier 循环 + Critic 条件边）。"""
 
-    def __init__(self, checkpointer: Any = None, *, rag_scope: Any = None):
+    def __init__(self, checkpointer: Any = None, *, rag_scope: Any = None,
+                 profile: Any = None):
         # 需求 35 R3（TBD-5）：checkpointer 可注入——Worker 传 PG saver（跨进程恢复）；
         # CLI/测试默认 None ⇒ MemorySaver（进程内，行为与历史一致）。
-        # 2026-11：rag_scope 显式注入（多租户检索作用域），主链路不再依赖
-        # 「先 set_scope 再建图」的 contextvar 顺序耦合；缺省时 Researcher 内部回退旧行为。
+        # 2026-11：rag_scope / profile 显式注入（检索作用域、运行档位），主链路不再依赖
+        # 「先 set_scope/set_profile 再建图」的 contextvar 顺序耦合；缺省时保持旧行为。
         self._checkpointer = checkpointer
+        self._profile = profile
         self.planner = Planner()
         self.clarifier = Clarifier()  # 需求 36 H1：澄清判定（仅开关打开时进入图）
         self.researcher = Researcher(rag_scope=rag_scope)
@@ -745,12 +747,15 @@ class DeepResearchGraph:
         register_ledger(thread_id, run_ctx.ledger)
         self.last_exception = None
         try:
-            if not self.trace_id:
-                result = self.graph.invoke(initial, cfg)
-            else:
-                with start_trace(self.trace_id, topic, thread_id=thread_id,
-                                 user_instructions=user_instructions):
+            # 2026-11：运行档位作为**显式输入**在 invoke 期间生效，结束后恢复原值 ——
+            # 不再要求调用方「先 set_profile 再建图」，也不会把档位泄漏给同线程的下一次 run。
+            with use_profile(getattr(self, "_profile", None)):
+                if not self.trace_id:
                     result = self.graph.invoke(initial, cfg)
+                else:
+                    with start_trace(self.trace_id, topic, thread_id=thread_id,
+                                     user_instructions=user_instructions):
+                        result = self.graph.invoke(initial, cfg)
             if isinstance(result, dict) and "__interrupt__" in result:
                 # 需求 36：run()/CLI 无 resume 通道——HITL 只支持队列模式（Worker）。
                 # 出现挂起按显式错误收口（绝不把挂起当终局结果）。
@@ -889,11 +894,13 @@ class DeepResearchGraph:
                if self.trace_id else nullcontext())
         with ctx:
             try:
-                yield from self._iter_steps(
-                    stream_input, cfg,
-                    run_ctx.cancelled if should_cancel is not None else None,
-                    None,
-                    fallback_state=initial, skip_leading=resume)
+                # 2026-11：档位显式输入在流式运行期间生效，结束后恢复（不泄漏给下一次 run）。
+                with use_profile(getattr(self, "_profile", None)):
+                    yield from self._iter_steps(
+                        stream_input, cfg,
+                        run_ctx.cancelled if should_cancel is not None else None,
+                        None,
+                        fallback_state=initial, skip_leading=resume)
             finally:
                 unregister_ledger(thread_id)
 
@@ -988,15 +995,17 @@ class DeepResearchGraph:
             self.last_ledger = ledger.snapshot()
 
 
-def create_graph(checkpointer: Any = None, *, rag_scope: Any = None) -> DeepResearchGraph:
+def create_graph(checkpointer: Any = None, *, rag_scope: Any = None,
+                 profile: Any = None) -> DeepResearchGraph:
     """构建研究图；``checkpointer=None`` ⇒ MemorySaver（需求 35 R3：Worker 传 PG saver）。
 
-    2026-11：``rag_scope`` 显式传入多租户检索作用域（runner/worker 使用）；
-    工厂带 ``accepts_rag_scope`` 标记，供执行器做能力探测后选择显式注入或旧 fallback。
+    2026-11：``rag_scope`` / ``profile`` 显式传入（多租户检索作用域、运行档位）；
+    工厂带能力标记，供执行器做能力探测后选择显式注入或旧 fallback。
     """
-    return DeepResearchGraph(checkpointer=checkpointer, rag_scope=rag_scope)
+    return DeepResearchGraph(checkpointer=checkpointer, rag_scope=rag_scope, profile=profile)
 
 
-#: 能力标记：执行器据此判断该 factory 是否支持 ``rag_scope=`` 显式注入
-#: （测试替身 / DemoGraph factory 没有该标记 ⇒ 走旧的 set_scope fallback）。
+#: 能力标记：执行器据此判断该 factory 是否支持 ``rag_scope=`` / ``profile=`` 显式注入
+#: （测试替身 / DemoGraph factory 没有标记 ⇒ 走旧的 set_scope / set_profile fallback）。
 create_graph.accepts_rag_scope = True
+create_graph.accepts_profile = True

@@ -36,7 +36,7 @@
 | 评测 v2 实跑（固定证据池 + 跨模型族裁判 + 人工抽检 + RAG 评测集） | 脚手架已就绪，**需 API key/预算**；现有 20 题自建集不支撑质量结论 |
 | 引用准确率 | 多口径（43.3~85.4%），**不可直接比较**；见 README「评测」与 `docs/eval-w9-baseline.md` |
 | 研究质量 | coverage ≈40%、uncited_fact_ratio ≈69%、信息不足标记 ≈74~79% —— 未达可宣称水平 |
-| 引擎彻底去隐式依赖（类级 LLM 计数 / contextvar） | 部分：RAG 作用域已显式注入；**类级 LLM 计数器已删除**（引擎/评测/追问走 run 级 TokenLedger + run_id 注册表；`tokens_diff` 废弃）；剩余：runtime_profile/usage contextvar |
+| 引擎彻底去隐式依赖（类级 LLM 计数 / contextvar） | 部分：RAG 作用域与运行档位已显式注入（`rag_scope`/`profile`）；**类级 LLM 计数器已删除**（走 run 级 TokenLedger）；剩余：usage contextvar |
 | 后端完整拆分（app factory + routers + services + repositories） | 仅完成 `api/meta.py` 样板 |
 | pip-audit 与 npm devDeps 审计 | 未做（pip-audit 的 PyPI advisory 请求本机超时，无法本地验证；mypy 增量门禁已接入） |
 | 生产就绪 | 审核默认本地空词表、无邮箱验证/CAPTCHA、沙箱非恶意代码隔离 —— **不宣称生产级** |

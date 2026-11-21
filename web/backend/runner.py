@@ -634,8 +634,13 @@ class RunManager:
                 rag_revision = 0
             rag_scope = RagScope(user_id=self.owner(run_id), revision=rag_revision)
             factory = self._graph_factory
+            graph_kwargs = {}
             if getattr(factory, "accepts_rag_scope", False):
-                graph = factory(rag_scope=rag_scope)
+                graph_kwargs["rag_scope"] = rag_scope
+            if getattr(factory, "accepts_profile", False):
+                graph_kwargs["profile"] = profile  # 2026-11：档位显式注入（不再只靠 set_profile）
+            if graph_kwargs:
+                graph = factory(**graph_kwargs)
             else:
                 set_scope(user_id=rag_scope.user_id, revision=rag_scope.revision)
                 graph = factory()
