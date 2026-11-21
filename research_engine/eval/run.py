@@ -317,7 +317,7 @@ def phase2(
     eval_dir = run_dir / "eval"
     eval_dir.mkdir(parents=True, exist_ok=True)
 
-    LLMClient.reset_stats()  # Q2/Q8：评估成本隔离（judge 桶单独快照）
+    # 2026-11：judge 自带 run 级账本（不再依赖类级全局计数器做评估成本隔离）
     judge = _make_judge()
 
     results: List[Dict[str, Any]] = []
@@ -347,12 +347,15 @@ def phase2(
         )
         results.append(res)
 
-    summary = _summarize(results, meta, run_dir, thresholds=thresholds)
+    summary = _summarize(results, meta, run_dir, thresholds=thresholds, judge_tokens=getattr(getattr(judge, "ledger", None), "total", None))
     (run_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
 
     from research_engine.eval.report_gen import generate_report  # 延迟导入避免环
 
     generate_report(run_dir, summary, results, dataset, force_revalidate=force_revalidate)
+    close_judge = getattr(judge, "close", None)
+    if callable(close_judge):
+        close_judge()  # 注销 judge 账本注册项
     return summary
 
 
@@ -447,6 +450,7 @@ def _summarize(
     meta: Dict[str, Any],
     run_dir: Path,
     thresholds: QualityThresholds = DEFAULT_THRESHOLDS,
+    judge_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
     """聚合汇总：N 完整 / M 部分 / K 失败 + 七指标**均值与离散度** + run 级质量闸。
 
@@ -471,7 +475,7 @@ def _summarize(
                 "metrics_mean": {}, "metrics_stderr": {}, "cost_total": {}, "struct": {},
                 "cost_phase1_total": cost_block,
                 "cost_degraded": cost_block["cost_degraded"],
-                "eval_tokens": LLMClient.tokens_total,
+                "eval_tokens": judge_tokens if judge_tokens is not None else LLMClient.tokens_total,
                 # W8 Arm 6：provenance 全字段带出（含 git/config + 新增的
                 # prompt_hash / prompt_slots / scorer_version / 裁判模型 / 裁判独立性）
                 **{k: _prov.get(k) for k in RAW_PROVENANCE_KEYS}}
@@ -508,7 +512,7 @@ def _summarize(
         "metrics_mean": metrics_mean,
         "metrics_stderr": metrics_stderr,
         "cost_phase1_total": cost_block,
-        "cost_phase2_judge_tokens": LLMClient.tokens_total,
+        "cost_phase2_judge_tokens": judge_tokens if judge_tokens is not None else LLMClient.tokens_total,
         # W8 §10.4 第 2 条 + Arm 6：provenance 全字段进 summary.json
         # （每轮都记，不再只写 baseline 一次；任何一份 summary 单独拿出来
         #  都能回答「这批数是谁裁的、用的哪套提示词」）

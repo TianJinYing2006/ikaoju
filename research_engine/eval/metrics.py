@@ -538,9 +538,50 @@ def compute_reflection(state: Dict[str, Any], coverage: float) -> Dict[str, Any]
 
 # ---------- 汇总 ----------
 
+class JudgeWithLedger:
+    """裁判客户端包装（2026-11）：给每次调用注入 ``state=<run_id>``，用量进 judge 账本。
+
+    Phase 2 的 judge 调用不经过研究图、没有 `ResearchState`；此前依赖类级计数器
+    统计评估成本。现在用合成 run_id 注册一份独立账本，`LLMClient` 按 `state.run_id`
+    记账 ⇒ 评估成本不再读类级全局计数器，也不与 Phase 1 研究成本串台。
+    """
+
+    def __init__(self, client: LLMClient, ledger, run_id: str):
+        from types import SimpleNamespace
+
+        from research_engine.runtime.ledger import register_ledger
+
+        self._client = client
+        self._judge_state = SimpleNamespace(run_id=run_id)
+        self.run_id = run_id
+        self.ledger = ledger
+        register_ledger(run_id, ledger)
+
+    def __getattr__(self, name):
+        attr = getattr(self._client, name)
+        if name in {"chat", "chat_json", "chat_stream"}:
+            def _call(*args, **kwargs):
+                if kwargs.get("state") is None:
+                    kwargs["state"] = self._judge_state
+                return attr(*args, **kwargs)
+            return _call
+        return attr
+
+    def close(self) -> None:
+        from research_engine.runtime.ledger import unregister_ledger
+
+        unregister_ledger(self.run_id)
+
+
 def _make_judge() -> LLMClient:
-    """judge 直建实例（Q3：smart 档，role=judge 独立职责桶；不污染 router 主链路桶）。"""
-    return LLMClient(model=judge_model_name(), role="judge")
+    """judge 直建实例（Q3：smart 档，role=judge 独立职责桶；不污染 router 主链路桶）。
+
+    2026-11：外层套 :class:`JudgeWithLedger`，评估成本走 run 级账本（`judge.ledger`）。
+    """
+    from research_engine.runtime.ledger import TokenLedger
+
+    client = LLMClient(model=judge_model_name(), role="judge")
+    return JudgeWithLedger(client, TokenLedger(), "eval-judge-phase2")  # type: ignore[return-value]
 
 
 def compute_all(

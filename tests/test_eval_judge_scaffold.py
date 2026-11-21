@@ -63,3 +63,56 @@ def test_cli_empty_values_do_not_override(monkeypatch):
     _apply_judge_overrides(args)
     assert config.eval.judge_model == "kept-model"
     assert config.eval.judge_family == ""
+
+
+# ---------------------------------------------------------------- 2026-11 裁判账本
+
+def test_judge_with_ledger_injects_state_and_registers():
+    from research_engine.eval.metrics import JudgeWithLedger
+    from research_engine.runtime import TokenLedger
+    from research_engine.runtime.ledger import ledger_for
+
+    class _FakeClient:
+        def __init__(self):
+            self.seen_state = None
+            self.seen_messages = None
+
+        def chat_json(self, messages, state=None, **kwargs):
+            self.seen_state = state
+            self.seen_messages = messages
+            return {"ok": True}
+
+    fake = _FakeClient()
+    ledger = TokenLedger()
+    judge = JudgeWithLedger(fake, ledger, "eval-judge-test")
+    assert ledger_for("eval-judge-test") is ledger
+    assert judge.chat_json([{"role": "user"}]) == {"ok": True}
+    assert fake.seen_state is not None
+    assert fake.seen_state.run_id == "eval-judge-test"
+    judge.close()
+    assert ledger_for("eval-judge-test") is None
+
+
+def test_judge_with_ledger_keeps_explicit_state():
+    from research_engine.eval.metrics import JudgeWithLedger
+    from research_engine.runtime import TokenLedger
+
+    class _FakeClient:
+        def chat(self, messages, state=None, **kwargs):
+            return state
+
+    judge = JudgeWithLedger(_FakeClient(), TokenLedger(), "eval-judge-x")
+    explicit = object()
+    assert judge.chat([], state=explicit) is explicit
+    judge.close()
+
+
+def test_make_judge_returns_ledgered_wrapper():
+    from research_engine.eval.metrics import JudgeWithLedger, _make_judge
+
+    judge = _make_judge()
+    try:
+        assert isinstance(judge, JudgeWithLedger)
+        assert judge.ledger.total == 0
+    finally:
+        judge.close()
