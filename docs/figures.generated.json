@@ -1,5 +1,5 @@
 {
-  "adr_count": 19,
+  "adr_count": 20,
   "ci_guard_script_files": [
     "check_doc_consistency.py",
     "check_frontend_boundary.py",

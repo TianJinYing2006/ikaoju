@@ -32,6 +32,7 @@
 | `（本轮）` | **文档结构收敛**：新增单页 `docs/status/current.md`（能做什么/进行中/不宣称什么）；`docs/project-status.md` 降级为「历史长日志」并加归档横幅 | `check_md_tables` / `check_doc_consistency` 全过 |
 | `（本轮）` | **contextvar 隐式依赖（RAG 作用域）显式化**：`create_graph(rag_scope=...)` / `Researcher(rag_scope=...)`；runner/worker 通过 `accepts_rag_scope` 能力标记显式注入，不再依赖「先 set_scope 再建图」的顺序；contextvar 仅作库函数/测试兜底 | `tests/test_rag_scope.py` 新增 3 例（显式优先于 contextvar、factory 透传、能力标记）；worker/loadtest 回归全绿 |
 | `（本轮）` | **类级 LLM 计数器（引擎运行期依赖）消除**：新增 `runtime/ledger.py`（run 级 `TokenLedger` + 进程级 run_id 注册表）；`create_graph/run/iter_run` 注入 `state.run_id` 并登记账本，LLM 记账按 run_id 写入；graph 输出 `last_ledger` 快照，`tokens_diff` 恒 None（旧字段仅兼容）；CLI 改打印 run 账本 | `tests/test_run_ledger.py` 7 例（累加/并发/注册表/按 run 隔离/无账本不崩）；HITL/Arm1/审计回归全绿 |
+| `（本轮）` | **ADR-0020**：记录「RAG 作用域显式注入 + run 级 TokenLedger」的背景/方案/取舍，含 msgpack checkpoint 教训；ADR 索引与 figures 计数同步 | `check_doc_consistency` ADR 索引 OK；figures「ADR 20 篇」 |
 | （本报告） | 文档：README 重写、执行报告 | `check_doc_consistency` 6/6 OK |
 
 另外：
@@ -65,8 +66,7 @@
 2. **后端拆分**：`web/backend/main.py` 3,846 行、66 个路由，与 `store`/`manager` 等模块级单例深度耦合；
    一次机械搬移的回归面不可控。建议按域分 6 个 PR（auth → runs/stream → rag → export/share → ops/meta → worker/runner），
    每 PR 先建 `web/backend/api/<domain>.py` 薄 router，再加契约测试。
-3. **覆盖率/类型/依赖扫描**：coverage 门禁（73%）与 Windows 安全 job 已接入；剩余 **pip-audit**（需先接受存量告警策略）
-   与 **mypy**（对 6.8 万行全量必然大面积报错，建议只对 `research_engine/runtime/`、`web/backend/api/` 新包增量生效）。
+3. **覆盖率/类型/依赖扫描**：coverage 门禁（73%）与 Windows 安全 job 已接入；**本轮尝试补 pip-audit + mypy，被环境网络阻断**：`pip install --target .deps pip-audit mypy` 对 files.pythonhosted.org 读取超时（`ReadTimeoutError`），无法本地验证就不加进 CI（避免红门禁）。待网络可用后：先 `pip-audit -r requirements-lock.txt` 接受存量告警策略，再对 `research_engine/runtime/`、`web/backend/api/` 做 mypy 增量。
 4. **截图/录屏**：需要 `npm ci && npm run build` 后用 Playwright 截 4 个真实页面；本晚优先保证代码与测试，
    该产物留待有浏览器环境时补。
 5. **Windows 沙箱测试进 CI**：GitHub-hosted runner 有 windows-latest，但当前 workflow 未配置；
