@@ -16,7 +16,7 @@
 | dev 领先 master | 0 | master 与 dev 已同步（`v0.2.0` 已合入 master） | `git rev-list --count master..HEAD` | 2026-10-27 |
 | 版本 tag | v0.1.0 / v0.2.0 | 2 个 tag；`v0.2.0` = 2026-10-26 里程碑发布 | `git tag` | 2026-10-27 |
 | 需求文档 | 45 篇 + 1 模板 | `docs/requirements/*.md`，排除 `模板.md` | 目录计数 | 2026-11-03 |
-| ADR | 18 篇 | `docs/decisions/0*.md`（0001–0018，索引完整） | 目录计数 + 索引链接校验 | 2026-10-28 |
+| ADR | 19 篇 | `docs/decisions/0*.md`（0001–0019，索引完整） | 目录计数 + 索引链接校验 | 2026-11-22 |
 | 数据库迁移 | 31 个 + 31 个结构断言 | `migrations/*.sql` + `migrations/checks/*.sql`；只前向 | 目录计数 | 2026-11-03 |
 | 文档体积 | ≈1.7 MB | `docs/` 递归文件大小 | 目录求和 | 2026-10-26 |
 
