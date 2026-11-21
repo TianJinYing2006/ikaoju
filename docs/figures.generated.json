@@ -1,0 +1,19 @@
+{
+  "adr_count": 18,
+  "ci_guard_script_files": [
+    "check_doc_consistency.py",
+    "check_frontend_boundary.py",
+    "check_public_ip.py",
+    "check_results_whitelist.py",
+    "check_tailwind_tokens.py",
+    "check_ui_patterns.py"
+  ],
+  "ci_guard_scripts": 6,
+  "e2e_spec_files": 21,
+  "migration_checks": 31,
+  "migrations": 31,
+  "requirement_docs": 45,
+  "test_files": 158,
+  "tracked_python_files": 324,
+  "tracked_python_lines": 69658
+}
