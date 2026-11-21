@@ -274,6 +274,9 @@ class DeepResearchGraph:
             # TBD-1：判定失败按「跳过澄清」继续；治理事件（非故障，不推 degraded）
             return {
                 "clarify_needed": False,
+                # 2026-11 修复：clarifier 的 LLM 调用经 router(state=...) 已累加 state.token_used，
+                # 必须随 delta 写回，否则预算硬闸看不到 HITL 路径的消耗（与其它节点同约定）。
+                "token_used": state.token_used,
                 "planner_events": [{"event": "clarify_skipped", "phase": "clarify",
                                     "reason": str(outcome.get("reason") or "llm_error")[:200]}],
                 "progress": [{"stage": "clarify", "msg": "澄清判定失败，跳过（零阻塞）"}],
@@ -283,6 +286,7 @@ class DeepResearchGraph:
             return {
                 "clarify_needed": True,
                 "clarify_round": round_no,
+                "token_used": state.token_used,
                 "clarification": {**state.clarification, "questions": outcome["questions"]},
                 "planner_events": [{"event": "clarify_questioned", "phase": "clarify",
                                     "round": round_no,
@@ -293,6 +297,7 @@ class DeepResearchGraph:
             }
         return {
             "clarify_needed": False,
+            "token_used": state.token_used,
             "planner_events": [{"event": "clarify_cleared", "phase": "clarify",
                                 "round": state.clarify_round,
                                 "reason": str(outcome.get("reason") or "")[:200]}],
@@ -374,6 +379,9 @@ class DeepResearchGraph:
             "subquestions": new_subs,
             "frontier": frontier,
             "per_subq_hop": {s.id: 0 for s in new_subs},
+            # 2026-11 修复：revise_plan 的 LLM 调用已累加 state.token_used，
+            # 必须写回 delta（HITL 审批路径同样受 token 硬闸约束）。
+            "token_used": state.token_used,
             # 修订失败 = 沿用原计划：版本号不递增（与 replan 降级同口径）
             "plan_version": state.plan_version + (0 if failed else 1),
             "plan_decision": {**(state.plan_decision or {}), "revise_failed": failed},
