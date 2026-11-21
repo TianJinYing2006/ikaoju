@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 from typing import Dict, List
 
 from openai import OpenAI
@@ -197,7 +198,7 @@ class HybridRetriever:
         self._bm25_cache[key] = (metas, bm25)
         return self._bm25_cache[key]
 
-    def embed_query(self, query: str) -> List[float]:
+    def embed_query(self, query: str, run_id: str = "") -> List[float]:
         resp = self._get_client().embeddings.create(
             model=config.rag.embedding_model,
             input=[query],
@@ -208,20 +209,28 @@ class HybridRetriever:
             kind="embedding", provider="dashscope", model=config.rag.embedding_model,
             role="query", input_tokens=total, total_tokens=total,
             request_id=getattr(resp, "id", None),
-        ))
+        ), run_id=run_id)
         return resp.data[0].embedding
 
     # ---- 单路召回 ----
 
     def _vector_hits(self, query: str, recall: int, scope: RagScope,
-                     resp: RetrieveResponse) -> List[dict]:
+                     resp: RetrieveResponse, run_id: str = "") -> List[dict]:
         hits: List[dict] = []
         if not config.llm.api_key:
             resp.note_backend_failure(
                 "vector", FailureReason.NOT_CONFIGURED.value, "未配置 DASHSCOPE_API_KEY，无法调用 Embedding")
             return hits
         try:
-            vector = self.embed_query(query)
+            # 兼容测试替身/自定义 embed 实现：只有声明 run_id 才注入（2026-11）
+            try:
+                _params = inspect.signature(self.embed_query).parameters
+            except (TypeError, ValueError):
+                _params = {}
+            if "run_id" in _params:
+                vector = self.embed_query(query, run_id=run_id)
+            else:
+                vector = self.embed_query(query)
             raw = self.store.search(vector, top_k=recall, scope=scope)
             reason = self.store.unavailable_reason
             if reason:
@@ -260,14 +269,14 @@ class HybridRetriever:
     # ---- 主入口 ----
 
     def retrieve(self, query: str, top_k: int | None = None,
-                 scope: RagScope | None = None) -> RetrieveResponse:
+                 scope: RagScope | None = None, run_id: str = "") -> RetrieveResponse:
         """双路召回 → RRF → 可选 rerank → 证据组装；返回 :class:`RetrieveResponse`。"""
         scope = scope if scope is not None else current_scope()
         top_k = top_k or config.rag.top_k
         recall = max(int(config.rag.recall_per_route), int(top_k))
         resp = RetrieveResponse(query=query)
 
-        vector_entries = self._vector_hits(query, recall, scope, resp)
+        vector_entries = self._vector_hits(query, recall, scope, resp, run_id=run_id)
         bm25_entries = self._bm25_hits(query, recall, scope, resp)
         entries = _rrf_merge(vector_entries, bm25_entries, k=int(config.rag.rrf_k))
 

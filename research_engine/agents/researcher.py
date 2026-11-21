@@ -17,6 +17,7 @@ W4 重构（grill Q1/Q5/Q6/Q8）：
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -139,11 +140,11 @@ class Researcher:
 
     # ---- 各工具单源检索（mutually independent，可并行）----
 
-    def _search_web(self, query: str) -> List[ResearchFinding]:
+    def _search_web(self, query: str, run_id: str = "") -> List[ResearchFinding]:
         """网络搜索。失败 → 空列表（Q1 并行 + Q4 读型 retries=1 在调度层）。"""
         try:
             resp = self.search.search(query, max_results=8)
-            emit_usage(UsageRecord(kind="search", provider=config.search.provider, role="web"))
+            emit_usage(UsageRecord(kind="search", provider=config.search.provider, role="web"), run_id=run_id)
         except UsageSinkError:
             # F06：strict 记账失败必须上抛（账务契约优先于「工具失败不进降级」语义）
             raise
@@ -151,7 +152,7 @@ class Researcher:
             # Arm 4 后 provider 已结构化返回失败原因；能抛到这里的属**未预期**内部错误，
             # 按非工具类归类（llm_error/token_limit/recursion_limit/internal），
             # 不再凭异常文本猜工具层 5 值。
-            emit_usage(UsageRecord(kind="search", provider=config.search.provider, role="web"))
+            emit_usage(UsageRecord(kind="search", provider=config.search.provider, role="web"), run_id=run_id)
             self._record_degradation("web_search", classify_exception(e), detail=str(e))
             return []
         # 单向派生：reason 直接取 resp.failure_reason，禁止在此手写第二个字面量
@@ -237,7 +238,7 @@ class Researcher:
                 metadata["snapshot_status"] = STATUS_DISABLED
         finding.metadata = metadata
 
-    def _search_rag(self, query: str) -> List[ResearchFinding]:
+    def _search_rag(self, query: str, run_id: str = "") -> List[ResearchFinding]:
         """RAG 知识库检索（去重契约：source=rag:<filename>，Q8 教训防饿死）。
 
         W8 Arm 4（决策 D-02）：retriever 返回 :class:`RetrieveResponse` ——
@@ -250,10 +251,14 @@ class Researcher:
         # 作用域兼容：测试替身可能以 __new__ 构造（无 _rag_scope）且 retrieve 不接受 scope 参数
         scope = getattr(self, "_rag_scope", None)
         try:
+            kwargs = {"top_k": 5}
             if scope is not None:
-                resp = self.retriever.retrieve(query, top_k=5, scope=scope)
-            else:
-                resp = self.retriever.retrieve(query, top_k=5)
+                kwargs["scope"] = scope
+            # 2026-11：只有 retrieve 声明了 run_id 才传（测试替身/自定义 retriever 兼容）
+            params = inspect.signature(self.retriever.retrieve).parameters
+            if "run_id" in params:
+                kwargs["run_id"] = run_id
+            resp = self.retriever.retrieve(query, **kwargs)
         except UsageSinkError:
             # F06：检索链路里的 embedding 记账失败（strict）必须上抛
             raise
@@ -294,10 +299,10 @@ class Researcher:
             )
         return findings
 
-    def _search_arxiv(self, query: str) -> List[ResearchFinding]:
+    def _search_arxiv(self, query: str, run_id: str = "") -> List[ResearchFinding]:
         """arXiv 学术检索（Q3：provider 已 relevance 排序 + 3s 限流）。"""
         resp = self.arxiv.search(query)  # provider 内部失败返回带 failure_reason 的空响应
-        emit_usage(UsageRecord(kind="search", provider="arxiv", role="arxiv"))
+        emit_usage(UsageRecord(kind="search", provider="arxiv", role="arxiv"), run_id=run_id)
         # 单向派生：reason 直接取 resp.failure_reason。零命中（empty_result）不上抛降级（D-03）。
         if is_fault_reason(resp.failure_reason):
             self._record_degradation(
@@ -317,7 +322,7 @@ class Researcher:
             )
         return findings
 
-    def _search_mcp(self, query: str) -> List[ResearchFinding]:
+    def _search_mcp(self, query: str, run_id: str = "") -> List[ResearchFinding]:
         """外部 MCP 检索（需求 37 M1；默认关闭 —— 关闭时 targets 不含本工具）。
 
         失败映射既有五值（单产者契约，零新增枚举）；成功/失败均记账
@@ -330,7 +335,7 @@ class Researcher:
             return []
         findings: List[ResearchFinding] = []
         for outcome in consumer.search(query):
-            emit_usage(UsageRecord(kind="tool", provider=outcome.server, role=outcome.tool))
+            emit_usage(UsageRecord(kind="tool", provider=outcome.server, role=outcome.tool), run_id=run_id)
             if is_fault_reason(outcome.failure_reason):
                 # 单向派生：reason 直接取适配层映射值（禁止在此手写第二个字面量）
                 self._record_degradation(
@@ -410,16 +415,22 @@ class Researcher:
         返回 (pooled_findings, tool_stats)——tool_stats 供"状态快照"消息（Q8）。
         """
         code_enabled = config.code_exec.evidence_enabled and should_execute(query)
-        targets: Dict[str, Any] = {"web": self._search_web, "rag": self._search_rag}
+        # 2026-11：把本 run 的 run_id 绑进各检索工具 → emit_usage 走显式注册表 sink，
+        # 不再依赖工具线程继承 ContextVar（F05 的 copy_context 仅保留给抓取上下文）。
+        run_id = getattr(state, "run_id", "") if state is not None else ""
+        targets: Dict[str, Any] = {
+            "web": _bind_run_id(self._search_web, run_id),
+            "rag": _bind_run_id(self._search_rag, run_id),
+        }
         # 学术检索（arXiv）可关：出口不通时它会每跳记一条 provider_error 降级，
         # 用户明确不需要学术源时关掉，可让 run_status 回到 success。
         if config.search.enable_arxiv:
-            targets["arxiv"] = self._search_arxiv
+            targets["arxiv"] = _bind_run_id(self._search_arxiv, run_id)
         if code_enabled:
             targets["code"] = self._search_code
         # 需求 37 M1：外部 MCP（仅启用且配置了 server 时并入；关闭态零漂移）
         if getattr(self, "_mcp", None) is not None:
-            targets["mcp"] = self._search_mcp
+            targets["mcp"] = _bind_run_id(self._search_mcp, run_id)
 
         all_findings: Dict[str, List[ResearchFinding]] = {k: [] for k in targets}
         with ThreadPoolExecutor(max_workers=len(targets)) as ex:
@@ -559,3 +570,16 @@ def format_tool_detail(tool_stats: Dict[str, Any]) -> str:
         suffix = "(失败)" if k == "code" and tool_stats.get("code_failed", 0) else ""
         parts.append(f"{k} {used}/{raw}{suffix}")
     return " / ".join(parts)
+def _bind_run_id(fn, run_id: str):
+    """只在目标函数声明了 ``run_id`` 时注入（兼容测试替身/外部自定义检索函数）。
+
+    2026-11：工具函数的 run_id 用于把 usage 记账送到显式注册表 sink；
+    对不接受该参数的老实现保持原调用方式，行为不变。
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):  # 内置/C 函数等无签名可读
+        return fn
+    if "run_id" in params:
+        return lambda query: fn(query, run_id=run_id)
+    return fn
