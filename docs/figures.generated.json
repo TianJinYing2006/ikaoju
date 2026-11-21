@@ -1,5 +1,5 @@
 {
-  "adr_count": 18,
+  "adr_count": 19,
   "ci_guard_script_files": [
     "check_doc_consistency.py",
     "check_frontend_boundary.py",
@@ -14,6 +14,6 @@
   "migrations": 31,
   "requirement_docs": 45,
   "test_files": 158,
-  "tracked_python_files": 324,
-  "tracked_python_lines": 69658
+  "tracked_python_files": 315,
+  "tracked_python_lines": 68426
 }
