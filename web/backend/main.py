@@ -2699,6 +2699,13 @@ async def rag_ingest(request: Request, file: UploadFile = File(...)) -> Response
             size, digest, head = await stream_to_temp(file, path, max_bytes)
         except UploadRejected as exc:
             raise http_error(exc.code, exc.message, detail=exc.detail) from exc
+        except OSError as exc:
+            # 2026-11：隔离区卷不可写 / 目录缺失（如 named volume 属主错误）⇒ 结构化 503，
+            # 不裸露 500。客户端只回固定文案；异常类型与原文经 safe_detail 进服务端日志（#324）。
+            raise http_error(
+                "rag_ingest_failed",
+                safe_detail("上传暂存失败（服务端存储不可写）", exc),
+            ) from exc
         if size == 0:
             raise http_error("invalid_request", "文件为空")
         try:

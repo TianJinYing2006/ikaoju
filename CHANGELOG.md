@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **知识库上传在隔离区卷不可写时不再裸 500**：镜像内预创建并授权 `/var/lib/deepresearch/rag-quarantine`（named volume 首次初始化继承属主，根治新环境复发）；`stream_to_temp` 的 `OSError` 转为结构化 503 `rag_ingest_failed`，客户端只回固定文案、异常原文经 `safe_detail` 只进服务端日志（#324 口径）。取代旧 PR #121。
+
 ## [0.3.0] - 2026-11-22
 
 > 2026-11「可审计性与架构收敛」批次：RunContext / run 级 token 账本 / RAG 作用域与运行档位显式注入 /

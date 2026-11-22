@@ -17,7 +17,7 @@
 | Web 应用：FastAPI + SSE（AG-UI 语义）+ React 前端；取消/刷新恢复/导出 md/json/docx/PDF | `web/backend/`、`web/frontend/` |
 | 账号/配额/限流/多租户 RAG/内容安全/只读分享/用量账本 | `web/backend/{auth,store,rag_pipeline,moderation}.py` |
 | 部署与运维：compose（PG+Redis+MinIO+worker）、迁移只前向、备份→恢复演练 | `docker-compose.staging.yml`、`tools/backup.sh`、CI `infra` |
-| 质量基线：1575 收集 / 1495 通过 / 80 跳过（另 1 个模块级 skip）；6 守卫；coverage 75%；mypy 增量门禁 | 见 `docs/figures.md` §3 |
+| 质量基线：1576 收集 / 1496 通过 / 80 跳过（另 1 个模块级 skip）；6 守卫；coverage 75%；mypy 增量门禁 | 见 `docs/figures.md` §3 |
 
 ## 2. 进行中（本次重构批次，已完成项）
 
