@@ -7,6 +7,7 @@
 
 ### Changed
 
+- **后端按域拆分第九刀（Passkey 管理路由）**：`GET /api/auth/webauthn`、`POST /api/auth/webauthn/register/begin`、`POST /api/auth/webauthn/register/complete` 与 `WebAuthnRegisterBegin/CompleteRequest` 从 `main.py` 抽到 `web/backend/api/webauthn.py`（132 行），`main.py` 3297→3221 行（-76）；协议细节仍走 `passkeys.py`、闸/视图/限流走 `webauthn.py` 服务层，Passkey/鉴权测试全绿。下一刀迁登录认证路由与删除凭据。
 - **后端按域拆分第八刀（Passkey 服务层）**：Passkey 的可用性闸 / 凭据视图序列化 / 管理与登录限流从 `main.py` 收敛到 `web/backend/webauthn.py`（57 行，限流器/审计/时间格式化/client_key 显式注入）；`main.py` 保留同名薄包装，3308→3297 行；行为不变，Passkey/鉴权/MFA 测试全绿。后续两刀分别迁管理路由与登录认证路由。
 - **后端按域拆分第七刀（MFA 域收官）**：`POST /api/auth/mfa/disable`、`POST /api/auth/mfa/verify` 与 `MfaDisableRequest` 迁入 `web/backend/api/mfa.py`；MFA 5 条路由全部在 api 层（206 行），`main.py` 3372→3308 行（-64）；step-up 轮换/新设备提醒/限流仍以注入方式复用 `web/backend/mfa.py` 服务层，MFA/鉴权/会话测试全绿。
 - **后端按域拆分第六刀（MFA 读/绑定路由）**：`GET /api/auth/mfa`、`POST /api/auth/mfa/totp/begin`、`POST /api/auth/mfa/totp/confirm` 与 `MfaBeginRequest`/`MfaCodeRequest` 从 `main.py` 抽到 `web/backend/api/mfa.py`（129 行），`main.py` 3449→3372 行（-77）；TOTP 判定仍走 `web/backend/mfa.py` 服务层，会话/限流/审计/任务库以注入方式保持原实现，MFA/鉴权测试全绿。下一刀迁 `disable`/`verify` 路由。

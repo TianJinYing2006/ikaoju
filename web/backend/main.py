@@ -61,6 +61,7 @@ from .api.health import build_health_router
 from .api.meta import router as meta_router
 from .api.mfa import build_mfa_router
 from .api.ops import build_ops_router
+from .api.webauthn import build_webauthn_manage_router
 from .appeals import submit_appeal
 from .auth import (
     CSRF_COOKIE as CSRF_COOKIE_BASE,
@@ -838,6 +839,18 @@ app.include_router(build_mfa_router(
 ))
 
 
+# 2026-11 后端按域拆分（第九刀）：Passkey 管理路由 status/register。
+app.include_router(build_webauthn_manage_router(
+    get_store=lambda: store,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    require_session_user=lambda req: _require_session_user(req),
+    check_csrf=lambda req: _check_csrf(req),
+    audit=lambda action, **kwargs: _audit(action, **kwargs),
+    format_dt=lambda value: _iso(value),
+    manage_limiter=lambda: PASSKEY_MANAGE_LIMITER,
+))
+
+
 def _check_csrf(request: Request) -> None:
     """双提交 Cookie 校验（仅在启用鉴权后生效；登录/注册除外）。"""
     if not AUTH_REQUIRED:
@@ -1267,18 +1280,6 @@ def _iso(value) -> Optional[str]:
 # ------------------------------------------------------------------ Passkey：WebAuthn（需求 20 P1-2）
 
 
-class WebAuthnRegisterCompleteRequest(BaseModel):
-    challenge_id: str = Field(..., min_length=8, max_length=128)
-    credential: dict[str, Any] = Field(default_factory=dict)
-    name: str = Field("", max_length=80)
-
-
-class WebAuthnRegisterBeginRequest(BaseModel):
-    """P0-2b：添加 Passkey 前必须重新输入当前密码（防会话劫持后持久化绑定）。"""
-
-    password: str = Field(..., min_length=1, max_length=200)
-
-
 class WebAuthnAuthenticateBeginRequest(BaseModel):
     email: str = Field("", max_length=254)
 
@@ -1313,83 +1314,6 @@ def _passkey_rate_limit(request: Request, email_hash: Optional[str] = None) -> N
     webauthn_service.check_login_rate_limit(
         login_limiter=LOGIN_LIMITER, account_limiter=LOGIN_ACCOUNT_LIMITER,
         audit=_audit, client_key=_client_key, request=request, email_hash=email_hash)
-
-
-@app.get("/api/auth/webauthn")
-def webauthn_status(request: Request) -> dict:
-    """当前用户的 Passkey 列表（管理面板用；不返回公钥）。"""
-    user = _require_session_user(request)
-    rows = _store_call(store.list_webauthn_credentials, user["user_id"])
-    return {
-        "available": passkeys.enabled(),
-        "rp_id": passkeys.rp_id(),
-        "credentials": [_passkey_view(row) for row in rows],
-    }
-
-
-@app.post("/api/auth/webauthn/register/begin")
-def webauthn_register_begin(req: WebAuthnRegisterBeginRequest, request: Request) -> dict:
-    _check_csrf(request)
-    user = _require_session_user(request)
-    _passkey_manage_rate_limit(user, request)
-    _require_webauthn_ready()
-    if not verify_password(user["password_hash"], req.password):
-        _audit("passkey_enroll_auth_failed", request=request, actor_user_id=user["user_id"])
-        raise http_error("invalid_credentials", "密码不正确")
-    existing = _store_call(store.list_webauthn_credentials, user["user_id"])
-    challenge, options = passkeys.registration_options(
-        user["user_id"], user["email"], existing)
-    challenge_id = uuid.uuid4().hex
-    _store_call(store.create_webauthn_challenge, challenge_id, user["user_id"],
-                "register", challenge,
-                datetime.now(UTC) + timedelta(seconds=passkeys.CHALLENGE_TTL_SECONDS))
-    _audit("passkey_enroll_started", request=request, actor_user_id=user["user_id"])
-    return {"challenge_id": challenge_id, "options": options}
-
-
-@app.post("/api/auth/webauthn/register/complete")
-def webauthn_register_complete(req: WebAuthnRegisterCompleteRequest,
-                               request: Request) -> dict:
-    _check_csrf(request)
-    user = _require_session_user(request)
-    _passkey_manage_rate_limit(user, request)
-    _require_webauthn_ready()
-    challenge_row = _store_call(store.consume_webauthn_challenge,
-                                req.challenge_id, "register")
-    if challenge_row is None or challenge_row.get("user_id") != user["user_id"]:
-        raise http_error("webauthn_challenge_invalid", "注册挑战无效或已过期")
-    try:
-        verified = passkeys.verify_registration(
-            req.credential, bytes(challenge_row["challenge"]))
-    except Exception as exc:  # noqa: BLE001 — 客户端输入不可信，统一按校验失败处理
-        _audit("passkey_register_failed", request=request,
-               actor_user_id=user["user_id"],
-               detail={"reason": type(exc).__name__})
-        raise http_error("webauthn_registration_invalid", "Passkey 注册校验未通过") from exc
-    name = (req.name or "").strip()[:64] or "通行密钥"
-    try:
-        store.create_webauthn_credential(
-            bytes(verified.credential_id), user["user_id"],
-            bytes(verified.credential_public_key), int(verified.sign_count),
-            transports=passkeys.transports_from_payload(req.credential),
-            aaguid=(verified.aaguid or None),
-            backup_state=bool(verified.credential_backed_up),
-            device_type=passkeys.device_type(verified.credential_device_type),
-            name=name,
-        )
-    except Exception as exc:  # noqa: BLE001
-        if getattr(exc, "sqlstate", None) == "23505":
-            raise http_error("passkey_exists", "该 Passkey 已绑定") from exc
-        raise http_error(
-            "persistence_unavailable",
-            safe_detail("保存 Passkey 失败", exc),
-        ) from exc
-    _audit("passkey_registered", request=request, actor_user_id=user["user_id"],
-           detail={"credential_id": passkeys.credential_id_b64(bytes(verified.credential_id))})
-    rows = _store_call(store.list_webauthn_credentials, user["user_id"])
-    row = next((item for item in rows
-                if bytes(item["credential_id"]) == bytes(verified.credential_id)), None)
-    return {"ok": True, "credential": _passkey_view(row) if row else None}
 
 
 @app.post("/api/auth/webauthn/authenticate/begin")
