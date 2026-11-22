@@ -59,6 +59,7 @@ from .api.health import build_health_router
 from .api.meta import router as meta_router
 from .api.mfa import build_mfa_router
 from .api.ops import build_ops_router
+from .api.rag_admin import build_rag_admin_router
 from .api.rag_read import build_rag_read_router
 from .api.rag_write import build_rag_write_router
 from .api.runs_manage import StartResponse, build_runs_manage_router
@@ -890,10 +891,23 @@ app.include_router(build_rag_read_router(
 app.include_router(build_rag_write_router(
     get_store=lambda: store,
     store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
-    owned_doc=lambda req, doc_id: _rag_owned_doc(req, doc_id),
+    require_user=lambda req: _require_user(req),
+    check_csrf=lambda req: _check_csrf(req),
     audit=lambda action, **kwargs: _audit(action, **kwargs),
     client_key=lambda req: _client_key(req),
     upload_limiter=lambda: RAG_UPLOAD_LIMITER,
+))
+
+
+# 2026-11 后端按域拆分（第十四刀）：知识库管理路由 ingestions/docs 删除。
+app.include_router(build_rag_admin_router(
+    get_store=lambda: store,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    require_user=lambda req: _require_user(req),
+    check_csrf=lambda req: _check_csrf(req),
+    format_dt=lambda value: _iso(value),
+    failed_detail=lambda: _RAG_FAILED_DETAIL,
+    auth_required=lambda: AUTH_REQUIRED,
 ))
 
 
@@ -1857,90 +1871,6 @@ async def rag_ingest(request: Request, file: UploadFile = File(...)) -> Response
 
 #: #324：摄取失败对用户只回固定文案；`last_error` 里的异常类别/原文只留在服务端（日志 + DB）。
 _RAG_FAILED_DETAIL = "文档处理失败"
-
-
-@app.get("/api/rag/ingestions/{ingestion_id}")
-def rag_ingestion_status(ingestion_id: str, request: Request) -> dict:
-    """摄取状态（P0-8b）：前端轮询 pending → processing → ready | rejected。"""
-    if store is None:
-        raise http_error("persistence_unavailable", "摄取状态需要任务库（DR_DATABASE_URL）")
-    user_id = _require_user(request)
-    row = _store_call(store.get_ingestion, ingestion_id)
-    if row is None or (AUTH_REQUIRED and row.get("user_id") != user_id):
-        raise http_error("ingestion_not_found", f"摄取记录不存在：{ingestion_id}")
-    return {
-        "ingestion_id": row["ingestion_id"],
-        "doc_id": row["doc_id"],
-        "source": row["source"],
-        "status": row["status"],
-        "task": row.get("task") or "ingest",
-        "chunks": row["chunks"],
-        "attempts": row["attempts"],
-        "scan_status": row["scan_status"],
-        "active_generation": row.get("active_generation"),
-        "error": _RAG_FAILED_DETAIL if row.get("last_error") else None,
-        "created_at": _iso(row.get("created_at")),
-        "processed_at": _iso(row.get("processed_at")),
-    }
-
-
-@app.delete("/api/rag/docs")
-def rag_delete_doc(request: Request, doc_id: str = Query(..., max_length=128)) -> dict:
-    """删除知识库文档（P0-8b）：Qdrant 按 doc_id 删除并**验证归零**，再清隔离区文件。
-
-    同步删除 + 失败 503（用户在场可重试）；账号注销走 durable outbox（P0-7）。
-    """
-    if store is None:
-        raise http_error("persistence_unavailable", "文档删除需要任务库（DR_DATABASE_URL）")
-    user_id = _require_user(request)
-    _check_csrf(request)
-    if doc_id.split(":", 1)[0] != (user_id or "local"):
-        raise http_error("invalid_request", "无权删除该文档", detail="ownership mismatch")
-
-    from research_engine.rag.store import VectorStore
-
-    from .ingestion import quarantine_path
-
-    vector_store = VectorStore()
-    reason = vector_store.unavailable_reason
-    if reason:
-        raise http_error("rag_unavailable", "知识库当前不可用，稍后再试",
-                         detail=vector_store.last_error or reason)
-    try:
-        vector_store.delete_by_doc(doc_id, wait=True)
-        remaining = vector_store.count_by_doc(doc_id)
-        if remaining:
-            raise RuntimeError(f"still has {remaining} points")
-    except Exception as exc:  # noqa: BLE001 —— 删除失败如实报错，用户可重试
-        raise http_error(
-            "rag_unavailable",
-            safe_detail("文档删除失败", exc),
-        ) from exc
-
-    names = _store_call(store.delete_ingestion_by_doc, user_id, doc_id)
-    for name in names:
-        if not name:
-            continue
-        try:
-            os.remove(quarantine_path(name))
-        except FileNotFoundError:
-            pass
-    # 需求 23：三层 PG 数据一并删除；递增修订号使检索缓存失效（删除后不可命中）
-    _store_call(store.delete_rag_layers, doc_id)
-    _store_call(store.bump_rag_revision)
-    return {"ok": True, "doc_id": doc_id}
-
-
-def _rag_owned_doc(request: Request, doc_id: str) -> tuple[Optional[str], dict]:
-    """需求 23 写操作前置：任务库 + 归属（非本人 404）+ CSRF + 台账行。"""
-    if store is None:
-        raise http_error("persistence_unavailable", "知识库管理需要任务库（DR_DATABASE_URL）")
-    user_id = _require_user(request)
-    _check_csrf(request)
-    row = _store_call(store.get_rag_doc_for_user, doc_id, user_id)
-    if row is None:
-        raise http_error("ingestion_not_found", f"文档不存在：{doc_id}")
-    return user_id, row
 
 
 @app.post("/api/research/{run_id}/cancel")
