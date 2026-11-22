@@ -7,6 +7,7 @@
 
 ### Changed
 
+- **后端按域拆分第五刀（MFA 服务层）**：MFA 的 TOTP 校验/恢复码兜底/step-up 会话轮换逻辑从 `main.py` 收敛到 `web/backend/mfa.py`（80 行，`store`/`store_call`/`set_session_cookies` 显式注入）；`main.py` 保留 5 个 MFA 路由的薄包装，3449 行；行为与需求 42 防重放/失败关闭语义不变，MFA/鉴权/会话测试全绿。下一刀将 MFA 路由与请求模型迁至 `api/mfa.py`。
 - **后端按域拆分第四刀（auth 凭据域）**：`POST /api/auth/register`、`POST /api/auth/login`、`POST /api/auth/logout` 与 `RegisterRequest`/`LoginRequest` 从 `main.py` 抽到 `web/backend/api/auth_credentials.py`（177 行），`main.py` 3580→3482 行（-98）；注册开关/限流器/会话 Cookie/审计/CSRF/设备指纹均以注入方式保持原实现，既有鉴权、限流、MFA、会话治理测试全绿。
 - **后端按域拆分第三刀（auth 会话域）**：`GET /api/auth/session`、`GET/DELETE /api/auth/sessions` 从 `main.py` 抽到 `web/backend/api/auth_sessions.py`（101 行），`main.py` 3633→3580 行（-53）；会话判定 / CSRF / 重认证限流 / 审计 / Cookie 清理仍由 main 注入，既有会话治理与鉴权测试全绿。
 - **后端按域拆分第二刀（ops 域）**：`/api/options`、`/api/metrics`、`/api/ops/alerts` 从 `main.py` 抽到 `web/backend/api/ops.py`（178 行），`main.py` 3753→3633 行（-120）；依赖注入同 health 域，现有选项/指标/告警测试全绿。
