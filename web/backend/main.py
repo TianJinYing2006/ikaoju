@@ -37,8 +37,6 @@ from pydantic import BaseModel, Field
 from config import config
 from research_engine.usage import pop_usage_sink, push_usage_sink
 
-from . import docx_render as docx_render_mod
-from . import export as export_mod
 from . import followup as followup_mod
 from . import mfa as mfa_service
 from .agui import (
@@ -52,6 +50,7 @@ from .agui import (
 )
 from .api.auth_credentials import build_auth_credentials_router
 from .api.auth_sessions import build_auth_sessions_router
+from .api.export_report import build_export_report_router
 from .api.health import build_health_router
 from .api.meta import router as meta_router
 from .api.mfa import build_mfa_router
@@ -944,6 +943,17 @@ app.include_router(build_share_public_router(
     share_markdown=lambda rid: _share_markdown(rid),
     enforce_output_policy=lambda rid: _enforce_output_policy(rid),
     frontend_index=lambda: FRONTEND_DIST / "index.html",
+))
+
+
+# 2026-11 后端按域拆分（第十八刀）：报告同步导出路由 md/json/docx。
+app.include_router(build_export_report_router(
+    get_manager=lambda: manager,
+    get_store=lambda: store,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    authorize_run=lambda req, rid: _authorize_run(req, rid),
+    enforce_output_policy=lambda rid: _enforce_output_policy(rid),
+    artifact_text=lambda rid, kind: _artifact_text(rid, kind),
 ))
 
 
@@ -1957,27 +1967,6 @@ def follow_up(run_id: str, req: FollowupRequest, request: Request) -> dict:
     return {"ok": True, **result}
 
 
-def _markdown_export_response(body: str, topic: Optional[str], run_id: str) -> Response:
-    """需求 17（#77）：下载文件名 = 话题名；RFC 6266 双格式（filename* UTF-8 + ASCII 回退）。"""
-    display, ascii_fallback = build_export_filename(topic, run_id)
-    return Response(
-        content=body,
-        media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": content_disposition(display, ascii_fallback)},
-    )
-
-
-def _docx_export_response(body: bytes, topic: Optional[str], run_id: str) -> Response:
-    """需求 38 F3：DOCX 同步导出（轻量、离线；生成在 API 进程内完成，不走作业队列）。"""
-    display, ascii_fallback = build_export_filename(topic, run_id, ".docx")
-    return Response(
-        content=body,
-        media_type=("application/vnd.openxmlformats-officedocument"
-                    ".wordprocessingml.document"),
-        headers={"Content-Disposition": content_disposition(display, ascii_fallback)},
-    )
-
-
 def _artifact_text(run_id: str, kind: str) -> Optional[str]:
     """读取文本产物（P1-6：对象存储与 PG 双路径；失败/缺失返回 None，不抛）。"""
     try:
@@ -1996,73 +1985,6 @@ def _artifact_text(run_id: str, kind: str) -> Optional[str]:
         except Exception:  # noqa: BLE001
             return None
     return body
-
-
-def _export_from_store(run_id: str, fmt: str, row: dict) -> Response:
-    """任务库导出回落（P2-C / 需求 38 F1）：与内存路径**同一装配与渲染口径**。
-
-    历史报告导出的头部/引用清单从「缺」变「有」——读取时渲染修复，不改写历史产物
-    （§12.5 已登记）；`export_json` 产物缺失的历史 run ⇒ 引用/来源显式标注不可用
-    （不伪造数据）。P1-6：产物可能存对象存储，读取前已过鉴权与 flagged 闸。
-    """
-    if not row.get("finished_at"):
-        raise http_error("report_not_ready", "研究尚未结束，暂无报告可导出")
-    if fmt == "json":
-        body = _artifact_text(run_id, "export_json")
-        if not body:
-            raise http_error("report_unavailable", "本次运行没有产出报告")
-        try:
-            return JSONResponse(json.loads(body))
-        except (TypeError, ValueError) as exc:
-            raise http_error("report_unavailable", "导出载荷损坏，无法解析") from exc
-    doc = export_mod.document_from_store(
-        row,
-        export_json=_artifact_text(run_id, "export_json"),
-        report_md=_artifact_text(run_id, "report_md"),
-    )
-    if not doc.report.strip():
-        raise http_error("report_unavailable", "本次运行没有产出报告")
-    if fmt == "docx":
-        return _docx_export_response(docx_render_mod.render_docx(doc), row.get("topic"), run_id)
-    return _markdown_export_response(export_mod.render_markdown(doc), row.get("topic"), run_id)
-
-
-@app.get("/api/research/{run_id}/report")
-def export_report(run_id: str, request: Request,
-                  fmt: str = Query("md", alias="format", pattern="^(md|json|docx)$")) -> Response:
-    """报告导出（P1-6）：`format=md` 下载 Markdown，`format=json` 取结构化载荷，
-    `format=docx`（需求 38 F3）同步生成 Word 文档。
-
-    为什么走后端而不沿用前端 Blob：前端那份只有 `result.report` 正文，
-    导出的文件脱离页面后无从自证来源；后端版本带 run_id / run_status /
-    降级条数等审计元数据与引用清单。P2-C：内存未命中时回落任务库产物。
-    P4-A：鉴权开启时只允许导出自己的 run。P0-4：flagged / blocked 一律 403。
-    """
-    _authorize_run(request, run_id)
-    _enforce_output_policy(run_id)
-    if not manager.exists(run_id):
-        if store is None:
-            raise http_error("run_id_not_found", f"run_id 不存在：{run_id}")
-        row = _store_call(store.get_run, run_id)
-        if row is None:
-            raise http_error("run_id_not_found", f"run_id 不存在：{run_id}")
-        return _export_from_store(run_id, fmt, row)
-    if not manager.has_result(run_id):
-        if not manager.is_finished(run_id):
-            raise http_error("report_not_ready", "研究尚未结束，暂无报告可导出")
-        raise http_error("report_unavailable", "本次运行没有产出报告")
-    payload = manager.export_payload(run_id)
-    if payload is None or not str(payload.get("result", {}).get("report") or "").strip():
-        raise http_error("report_unavailable", "本次运行没有产出报告")
-
-    if fmt == "json":
-        return JSONResponse(payload)
-    if fmt == "docx":
-        return _docx_export_response(
-            docx_render_mod.render_docx(export_mod.document_from_payload(payload)),
-            payload.get("topic"), run_id)
-    return _markdown_export_response(
-        manager.export_markdown(run_id) or "", payload.get("topic"), run_id)
 
 
 # ---------------------------------------------------------------- PDF 异步导出作业（需求 38 F2）
