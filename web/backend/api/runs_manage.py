@@ -11,12 +11,17 @@ from typing import Any, Callable, Optional
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, Field
 
-from ..errors import http_error
+from ..errors import ApiError, http_error
 from ..moderation import MAX_TOPIC_LENGTH
+from ..profiles import DEFAULT_PROFILE, resolve_profile
 
 
 class RenameRunRequest(BaseModel):
     topic: str = Field(..., max_length=MAX_TOPIC_LENGTH)
+
+
+class StartResponse(BaseModel):
+    run_id: str
 
 
 def build_runs_manage_router(
@@ -29,6 +34,16 @@ def build_runs_manage_router(
     audit: Callable[..., None],
     run_brief: Callable[[dict], dict],
     open_statuses: Callable[[], Any],
+    client_key: Callable[[Request], str],
+    submit_limiter: Callable[[], Any],
+    check_input_safety: Callable[..., None],
+    start_queued: Callable[..., str],
+    manager_start: Callable[..., str],
+    effective_run_budget: Callable[[Any], float],
+    admission_limits: Callable[[float], dict],
+    request_fingerprint: Callable[..., str],
+    idempotent_existing: Callable[..., Optional[dict]],
+    execution_mode: Callable[[], str],
 ) -> APIRouter:
     """构造任务管理路由；依赖全部由组合根注入。"""
     router = APIRouter()
@@ -134,5 +149,65 @@ def build_runs_manage_router(
         audit("run_unarchived", request=request, actor_user_id=owner,
               target_type="run", target_id=run_id)
         return {"ok": True, "run_id": run_id, "archived": False}
+
+
+    @router.post("/api/runs/{run_id}/retry", response_model=StartResponse)
+    def retry_run(run_id: str, request: Request) -> StartResponse:
+        """需求 22：失败任务一键重试 —— 复制原 request 快照创建**新 run**（`retry_of` 血缘）。
+
+        幂等键固定 `retry-{原 run_id}`：重复点击返回同一个新 run；配额 / 预算照常走准入事务。
+        仅终态失败（FAILED / LOST / TIMED_OUT）可重试；其余 409。
+        """
+        store = get_store()
+        if store is None:
+            raise http_error("persistence_unavailable", "未配置任务库（DR_DATABASE_URL）")
+        owner = authorize_run(request, run_id)
+        check_csrf(request)
+        if not submit_limiter().allow(f"submit:{owner or client_key(request)}"):
+            raise http_error("rate_limited", "提交过于频繁，稍后再试")
+        row = store_call(store.get_run, run_id)
+        if row is None:
+            raise http_error("run_id_not_found", f"run_id 不存在：{run_id}")
+        if row["status"] not in ("FAILED", "LOST", "TIMED_OUT"):
+            raise http_error(
+                "run_not_retryable",
+                "仅失败 / 失联 / 超时的任务可重试",
+                detail=f"status={row['status']}",
+            )
+        payload = row.get("request") or {}
+        profile_name = (payload.get("profile") or {}).get("name") or DEFAULT_PROFILE
+        profile = resolve_profile(profile_name) or resolve_profile(DEFAULT_PROFILE)
+        topic = row["topic"]
+        instructions = payload.get("instructions") or ""
+        idempotency_key = f"retry-{run_id}"
+        ignored = payload.get("ignored_overrides") or {}
+        fingerprint = request_fingerprint(topic, instructions, profile.name)
+        # 2026-11 PR 审阅修复：幂等命中**先于**输入安全闸（与主创建路径同序）。
+        existing = idempotent_existing(owner, idempotency_key, fingerprint)
+        if existing is not None:
+            return StartResponse(run_id=existing["run_id"])
+        try:
+            # 2026-11 修复：重试也必须过输入安全闸（不得绕过审核/注入预检），降级同样 fail-closed
+            check_input_safety(topic=topic, instructions=instructions,
+                               user_id=owner, request=request)
+            if execution_mode() == "queue":
+                new_run_id = start_queued(
+                    topic=topic, instructions=instructions, idempotency_key=idempotency_key,
+                    user_id=owner, profile=profile, ignored=ignored, fingerprint=fingerprint,
+                    retry_of=run_id)
+            else:
+                budget = effective_run_budget(profile)
+                new_run_id = manager_start(
+                    topic, instructions, profile,
+                    idempotency_key, user_id=owner,
+                    budget_limit_cny=budget,
+                    ignored_overrides=ignored,
+                    admission=admission_limits(budget),
+                    request_hash=fingerprint, retry_of=run_id)
+        except ApiError as exc:
+            raise exc.to_http() from exc
+        audit("run_retried", request=request, actor_user_id=owner, target_type="run",
+              target_id=run_id, detail={"new_run_id": new_run_id})
+        return StartResponse(run_id=new_run_id)
 
     return router
