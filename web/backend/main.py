@@ -45,6 +45,7 @@ from . import export as export_mod
 from . import followup as followup_mod
 from . import mfa as mfa_service
 from . import passkeys
+from . import webauthn as webauthn_service
 from .agui import (
     FOLLOWUP_ANSWERED,
     FOLLOWUP_ASKED,
@@ -1292,38 +1293,26 @@ class WebAuthnDeleteRequest(BaseModel):
 
 
 def _require_webauthn_ready() -> None:
-    if not passkeys.enabled():
-        raise http_error("webauthn_unavailable", "Passkey 未启用（缺少 DR_WEBAUTHN_RP_ID / ORIGIN）")
+    """Passkey 端点前置（实现见 web/backend/webauthn.py）。"""
+    webauthn_service.require_ready()
 
 
 def _passkey_view(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "credential_id": passkeys.credential_id_b64(bytes(row["credential_id"])),
-        "name": row.get("name") or "未命名通行密钥",
-        "aaguid": row.get("aaguid"),
-        "transports": list(row.get("transports") or []),
-        "backup_state": bool(row.get("backup_state")),
-        "device_type": row.get("device_type"),
-        "created_at": _iso(row.get("created_at")),
-        "last_used_at": _iso(row.get("last_used_at")),
-    }
+    """凭据行 → 对外视图（实现见 web/backend/webauthn.py）。"""
+    return webauthn_service.passkey_view(row, format_dt=_iso)
 
 
 def _passkey_manage_rate_limit(user: dict[str, Any], request: Request) -> None:
-    """P0-2：Passkey 管理（注册/删除）按用户限流，防挑战刷取与枚举。"""
-    if not PASSKEY_MANAGE_LIMITER.allow(f"passkey-manage:{user['user_id']}"):
-        _audit("passkey_manage_rate_limited", request=request, actor_user_id=user["user_id"])
-        raise http_error("rate_limited", "Passkey 操作过于频繁，稍后再试")
+    """P0-2：管理操作按用户限流（实现见 web/backend/webauthn.py）。"""
+    webauthn_service.check_manage_rate_limit(
+        rate_limiter=PASSKEY_MANAGE_LIMITER, audit=_audit, user=user, request=request)
 
 
 def _passkey_rate_limit(request: Request, email_hash: Optional[str] = None) -> None:
-    allowed = LOGIN_LIMITER.allow(f"passkey:{_client_key(request)}")
-    if email_hash is not None:
-        allowed = LOGIN_ACCOUNT_LIMITER.allow(f"passkey-acct:{email_hash}") and allowed
-    if not allowed:
-        _audit("passkey_rate_limited", request=request,
-               detail={"email_hash": email_hash} if email_hash else None)
-        raise http_error("rate_limited", "Passkey 请求过于频繁，稍后再试")
+    """登录入口 IP+账号双维限流（实现见 web/backend/webauthn.py）。"""
+    webauthn_service.check_login_rate_limit(
+        login_limiter=LOGIN_LIMITER, account_limiter=LOGIN_ACCOUNT_LIMITER,
+        audit=_audit, client_key=_client_key, request=request, email_hash=email_hash)
 
 
 @app.get("/api/auth/webauthn")
