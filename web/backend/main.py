@@ -53,6 +53,7 @@ from .agui import (
     REPORT_DELTA,
     sse_frame,
 )
+from .api.auth_sessions import build_auth_sessions_router
 from .api.health import build_health_router
 from .api.meta import LEGAL_DIR, legal_version
 from .api.meta import router as meta_router
@@ -788,6 +789,21 @@ app.include_router(build_ops_router(
 ))
 
 
+# 2026-11 后端按域拆分（第三刀）：会话域路由 session/sessions 撤销。
+app.include_router(build_auth_sessions_router(
+    get_store=lambda: store,
+    session_user=lambda req: _session_user(req),
+    require_session_user=lambda req: _require_session_user(req),
+    public_user=lambda user: _public_user(user),
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    format_dt=lambda dt: _iso(dt),
+    check_csrf=lambda req: _check_csrf(req),
+    reauth_rate_limit=lambda user, req, action: _reauth_rate_limit(user, req, action),
+    audit=lambda action, **kwargs: _audit(action, **kwargs),
+    clear_session_cookies=lambda resp: _clear_session_cookies(resp),
+))
+
+
 def _check_csrf(request: Request) -> None:
     """双提交 Cookie 校验（仅在启用鉴权后生效；登录/注册除外）。"""
     if not AUTH_REQUIRED:
@@ -1304,14 +1320,6 @@ def auth_logout(request: Request, response: Response) -> dict:
     return {"ok": True}
 
 
-@app.get("/api/auth/session")
-def auth_session(request: Request) -> dict:
-    user = _session_user(request)
-    if user is None:
-        raise http_error("unauthenticated", "未登录")
-    return {"user": _public_user(user)}
-
-
 # ------------------------------------------------------------------ MFA：TOTP + 恢复码（需求 20 P1-3）
 
 #: 认证器 App 中显示的签发方
@@ -1790,10 +1798,6 @@ def webauthn_delete(credential_id: str, req: WebAuthnDeleteRequest,
 # ------------------------------------------------------------------ 会话治理（P1-10）
 
 
-class RevokeSessionRequest(BaseModel):
-    password: Optional[str] = Field(None, max_length=200)
-
-
 class ResetPasswordRequest(BaseModel):
     token: str = Field(..., min_length=10, max_length=256)
     new_password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=200)
@@ -1812,63 +1816,6 @@ def _require_session_user(request: Request) -> dict:
     if user is None:
         raise http_error("unauthenticated", "请先登录")
     return user
-
-
-@app.get("/api/auth/sessions")
-def auth_sessions(request: Request) -> dict:
-    """本用户活跃会话列表（P1-10）：对外只暴露 `session_id`，不泄露 token 摘要。"""
-    user = _require_session_user(request)
-    current = user.get("session_token_hash")
-    rows = _store_call(store.list_sessions, user["user_id"])
-    return {"sessions": [{
-        "session_id": row["session_id"],
-        "current": row["token_hash"] == current,
-        "created_at": _iso(row["created_at"]),
-        "last_seen_at": _iso(row["last_seen_at"]),
-        "ip": row["ip"],
-        "user_agent": row["user_agent"],
-    } for row in rows]}
-
-
-@app.delete("/api/auth/sessions/{session_id}")
-def auth_revoke_session(session_id: str, req: RevokeSessionRequest, request: Request,
-                        response: Response) -> dict:
-    """终止一个会话（P1-10）；终止**其他**会话需重认证（ASVS 7.5.2）。"""
-    user = _require_session_user(request)
-    _check_csrf(request)
-    is_current = user.get("session_id") == session_id
-    if not is_current:
-        # 需求 42：重认证（终止他人会话）按用户限流，密码错误留审计
-        _reauth_rate_limit(user, request, "session_revoke")
-        if not req.password or not verify_password(user["password_hash"], req.password):
-            _audit("session_revoke_denied", request=request, actor_user_id=user["user_id"],
-                   target_id=session_id, detail={"reason": "bad_password"})
-            raise http_error("invalid_credentials", "终止其他会话需要输入当前密码")
-    if not _store_call(store.revoke_session_by_id, user["user_id"], session_id):
-        raise http_error("invalid_request", "会话不存在")
-    _audit("session_revoked", request=request, actor_user_id=user["user_id"],
-           target_id=session_id, detail={"current": is_current})
-    if is_current:
-        _clear_session_cookies(response)
-    return {"ok": True}
-
-
-@app.delete("/api/auth/sessions")
-def auth_revoke_other_sessions(req: RevokeSessionRequest, request: Request) -> dict:
-    """退出其他所有设备（P1-10）：需重认证；当前会话保留。"""
-    user = _require_session_user(request)
-    _check_csrf(request)
-    # 需求 42：重认证（退出其他所有设备）按用户限流，密码错误留审计
-    _reauth_rate_limit(user, request, "sessions_revoke_others")
-    if not req.password or not verify_password(user["password_hash"], req.password):
-        _audit("session_revoke_denied", request=request, actor_user_id=user["user_id"],
-               detail={"scope": "others", "reason": "bad_password"})
-        raise http_error("invalid_credentials", "退出其他设备需要输入当前密码")
-    revoked = _store_call(store.revoke_other_sessions, user["user_id"],
-                          user["session_token_hash"])
-    _audit("sessions_revoked_others", request=request, actor_user_id=user["user_id"],
-           detail={"revoked": revoked})
-    return {"ok": True, "revoked": revoked}
 
 
 @app.post("/api/auth/reset")
