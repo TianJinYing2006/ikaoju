@@ -7,6 +7,7 @@
 
 ### Changed
 
+- **后端按域拆分第四刀（auth 凭据域）**：`POST /api/auth/register`、`POST /api/auth/login`、`POST /api/auth/logout` 与 `RegisterRequest`/`LoginRequest` 从 `main.py` 抽到 `web/backend/api/auth_credentials.py`（177 行），`main.py` 3580→3482 行（-98）；注册开关/限流器/会话 Cookie/审计/CSRF/设备指纹均以注入方式保持原实现，既有鉴权、限流、MFA、会话治理测试全绿。
 - **后端按域拆分第三刀（auth 会话域）**：`GET /api/auth/session`、`GET/DELETE /api/auth/sessions` 从 `main.py` 抽到 `web/backend/api/auth_sessions.py`（101 行），`main.py` 3633→3580 行（-53）；会话判定 / CSRF / 重认证限流 / 审计 / Cookie 清理仍由 main 注入，既有会话治理与鉴权测试全绿。
 - **后端按域拆分第二刀（ops 域）**：`/api/options`、`/api/metrics`、`/api/ops/alerts` 从 `main.py` 抽到 `web/backend/api/ops.py`（178 行），`main.py` 3753→3633 行（-120）；依赖注入同 health 域，现有选项/指标/告警测试全绿。
 - **后端按域拆分第一刀（health 域）**：`/api/health`、`/api/health/live`、`/api/health/ready` 从 `main.py` 抽到 `web/backend/api/health.py`，依赖由组合根以 getter 注入；`main.py` 3861→3753 行（-108），新增 `api/health.py` 159 行。路由/响应/安全披露语义不变，既有健康与运维测试全绿。
