@@ -58,7 +58,7 @@ from .api.auth_credentials import build_auth_credentials_router
 from .api.auth_sessions import build_auth_sessions_router
 from .api.health import build_health_router
 from .api.meta import router as meta_router
-from .api.mfa import MfaCodeRequest, build_mfa_read_router
+from .api.mfa import build_mfa_router
 from .api.ops import build_ops_router
 from .appeals import submit_appeal
 from .auth import (
@@ -95,7 +95,6 @@ from .hitl import (
 from .injection_guard import scan_injection
 from .mailer import get_mailer, new_login_email, password_reset_email
 from .metrics import METRICS
-from .mfa import TOTP_OK, TOTP_REPLAY
 from .moderation import (
     MAX_APPEAL_LENGTH,
     MAX_INSTRUCTIONS_LENGTH,
@@ -817,17 +816,24 @@ app.include_router(build_auth_credentials_router(
 ))
 
 
-# 2026-11 后端按域拆分（第六刀）：MFA 读/绑定路由 status/begin/confirm。
-app.include_router(build_mfa_read_router(
+# 2026-11 后端按域拆分（第六/七刀）：MFA 域路由 status/begin/confirm/disable/verify。
+app.include_router(build_mfa_router(
     get_store=lambda: store,
     store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
     require_session_user=lambda req: _require_session_user(req),
+    pending_session_user=lambda req: _pending_session_user(req),
+    public_user=lambda user: _public_user(user),
+    client_key=lambda req: _client_key(req),
     check_csrf=lambda req: _check_csrf(req),
     audit=lambda action, **kwargs: _audit(action, **kwargs),
     format_dt=lambda value: _iso(value),
     require_mfa_ready=lambda: _require_mfa_ready(),
     verify_totp_factor=lambda factor, code: _verify_totp_factor(factor, code),
+    verify_mfa_factor=lambda uid, factor, code: _verify_mfa_factor(uid, factor, code),
     enroll_limiter=lambda: MFA_ENROLL_LIMITER,
+    verify_limiter=lambda: MFA_VERIFY_LIMITER,
+    notify_new_login=lambda user, req: _notify_new_login(user, req),
+    rotate_session_after_step_up=lambda user, req, resp: _rotate_session_after_step_up(user, req, resp),
 ))
 
 
@@ -1253,78 +1259,8 @@ def _verify_mfa_factor(user_id: str, factor: dict, code: str) -> str:
 
 # ------------------------------------------------------------------ MFA：TOTP + 恢复码（需求 20 P1-3）
 
-class MfaDisableRequest(BaseModel):
-    password: str = Field(..., min_length=1, max_length=200)
-    code: str = Field("", max_length=32)
-
-
 def _iso(value) -> Optional[str]:
     return value.isoformat() if value is not None else None
-
-
-@app.post("/api/auth/mfa/disable")
-def mfa_disable(req: MfaDisableRequest, request: Request) -> dict:
-    """关闭 MFA（需密码 + TOTP/恢复码；恢复码路径保证「密钥丢失」时仍可自救）。"""
-    _check_csrf(request)
-    user = _require_session_user(request)
-    if not MFA_ENROLL_LIMITER.allow(f"mfa-enroll:{user['user_id']}"):
-        _audit("mfa_enroll_rate_limited", request=request, actor_user_id=user["user_id"])
-        raise http_error("rate_limited", "MFA 操作过于频繁，稍后再试")
-    if not verify_password(user["password_hash"], req.password):
-        _audit("mfa_disable_failed", request=request, actor_user_id=user["user_id"],
-               detail={"reason": "bad_password"})
-        raise http_error("invalid_credentials", "密码不正确")
-    factor = _store_call(store.get_mfa_factor, user["user_id"])
-    status = (TOTP_OK if factor is None
-              else _verify_mfa_factor(user["user_id"], factor, req.code))
-    if status != TOTP_OK:
-        _audit("mfa_disable_failed", request=request, actor_user_id=user["user_id"],
-               detail={"reason": "replay" if status == TOTP_REPLAY else "bad_code"})
-        raise http_error("mfa_code_invalid", "验证码或恢复码不正确")
-    _store_call(store.delete_mfa_factors, user["user_id"])
-    _store_call(store.replace_recovery_codes, user["user_id"], [])
-    _audit("mfa_disabled", request=request, actor_user_id=user["user_id"])
-    return {"ok": True}
-
-
-@app.post("/api/auth/mfa/verify")
-def mfa_verify(req: MfaCodeRequest, request: Request, response: Response) -> dict:
-    """登录第二步（step-up）：半程会话 + TOTP/恢复码 ⇒ 标记该会话已完成第二步。
-
-    需求 42：第二步成功后**轮换会话 token**（与登录一致），旧半程 token 立即失效，
-    防会话固定（攻击者预置的半程 token 不能借受害者的验证码「转正」）。
-    """
-    _check_csrf(request)
-    user = _pending_session_user(request)
-    if user is None:
-        raise http_error("unauthenticated", "请先登录")
-    if user.get("session_mfa_verified", True):
-        return {"user": _public_user(user)}   # 幂等：已完成第二步
-    factor = _store_call(store.get_mfa_factor, user["user_id"])
-    if factor is None:
-        # 因子已在别处移除（如已关闭 MFA）：直接完成，避免把自己锁死
-        _store_call(store.set_session_mfa_verified, user["session_token_hash"], True)
-        _rotate_session_after_step_up(user, request, response)
-        return {"user": _public_user(user)}
-    if not MFA_VERIFY_LIMITER.allow(f"mfa-verify:{user['user_id']}"):
-        _audit("mfa_verify_rate_limited", request=request, actor_user_id=user["user_id"])
-        raise http_error("rate_limited", "验证码尝试过于频繁，稍后再试")
-    status = _verify_mfa_factor(user["user_id"], factor, req.code)
-    if status != TOTP_OK:
-        _audit("mfa_verify_replay" if status == TOTP_REPLAY else "mfa_verify_failed",
-               request=request, actor_user_id=user["user_id"])
-        raise http_error("mfa_code_invalid", "验证码或恢复码不正确")
-    _store_call(store.set_session_mfa_verified, user["session_token_hash"], True)
-    _audit("mfa_verified", request=request, actor_user_id=user["user_id"])
-    # 第二步完成后才判「新设备」：此时须排除本半程会话
-    rows = [row for row in _store_call(store.list_sessions, user["user_id"])
-            if row.get("token_hash") != user["session_token_hash"]]
-    if is_new_device([device_key(row.get("user_agent"), row.get("ip")) for row in rows],
-                     request.headers.get("user-agent"), _client_key(request)):
-        _notify_new_login(user, request)
-    # 需求 42：轮换 token 放在新设备判定**之后**（否则新会话会把自己算进已知设备）
-    _rotate_session_after_step_up(user, request, response)
-    return {"user": _public_user(user)}
 
 
 # ------------------------------------------------------------------ Passkey：WebAuthn（需求 20 P1-2）

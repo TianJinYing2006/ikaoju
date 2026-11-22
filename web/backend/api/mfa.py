@@ -1,20 +1,20 @@
-"""MFA 读/绑定路由（2026-11 后端按域拆分第六刀：status / totp begin / totp confirm）。
+"""MFA 域路由（2026-11 后端按域拆分第六/七刀：status / totp begin / confirm / disable / verify）。
 
 拆分原则（`docs/plan/2026-11-execution.md` §3 / `web/backend/api/__init__.py`）：
 - 本层只做 HTTP 映射与序列化；TOTP 判定/恢复码/step-up 轮换在 `web/backend/mfa.py`，
   会话判定、限流、审计、任务库调用仍由 `main.py` 注入；
-- `MfaCodeRequest` 由本模块定义并被 `main.py` 的 verify 路由复用（第七刀迁 verify 时移除）。
+- 本模块不 import `main`，依赖全部由组合根以 getter/callable 注入。
 """
 from __future__ import annotations
 
 import uuid
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, Field
 
 from .. import secretbox
-from ..auth import verify_password
+from ..auth import device_key, is_new_device, verify_password
 from ..errors import http_error
 from ..mfa import MFA_ISSUER, TOTP_OK, TOTP_REPLAY
 from ..totp import (
@@ -40,19 +40,31 @@ class MfaCodeRequest(BaseModel):
     code: str = Field(..., min_length=4, max_length=32)
 
 
-def build_mfa_read_router(
+class MfaDisableRequest(BaseModel):
+    password: str = Field(..., min_length=1, max_length=200)
+    code: str = Field("", max_length=32)
+
+
+def build_mfa_router(
     *,
     get_store: Callable[[], Any],
     store_call: Callable[..., Any],
     require_session_user: Callable[[Request], dict],
+    pending_session_user: Callable[[Request], Optional[dict]],
+    public_user: Callable[[dict], dict],
+    client_key: Callable[[Request], str],
     check_csrf: Callable[[Request], None],
     audit: Callable[..., None],
     format_dt: Callable[[Any], Optional[str]],
     require_mfa_ready: Callable[[], None],
     verify_totp_factor: Callable[[dict, str], str],
+    verify_mfa_factor: Callable[[str, dict, str], str],
     enroll_limiter: Callable[[], Any],
+    verify_limiter: Callable[[], Any],
+    notify_new_login: Callable[[dict, Request], None],
+    rotate_session_after_step_up: Callable[[dict, Request, Response], None],
 ) -> APIRouter:
-    """构造 MFA 读/绑定路由；依赖全部由组合根注入。"""
+    """构造 MFA 域路由；依赖全部由组合根注入。"""
     router = APIRouter()
 
     @router.get("/api/auth/mfa")
@@ -125,5 +137,70 @@ def build_mfa_read_router(
                    [hash_recovery_code(code) for code in codes])
         audit("mfa_enabled", request=request, actor_user_id=user["user_id"])
         return {"ok": True, "recovery_codes": codes}
+
+    @router.post("/api/auth/mfa/disable")
+    def mfa_disable(req: MfaDisableRequest, request: Request) -> dict:
+        """关闭 MFA（需密码 + TOTP/恢复码；恢复码路径保证「密钥丢失」时仍可自救）。"""
+        check_csrf(request)
+        user = require_session_user(request)
+        if not enroll_limiter().allow(f"mfa-enroll:{user['user_id']}"):
+            audit("mfa_enroll_rate_limited", request=request, actor_user_id=user["user_id"])
+            raise http_error("rate_limited", "MFA 操作过于频繁，稍后再试")
+        if not verify_password(user["password_hash"], req.password):
+            audit("mfa_disable_failed", request=request, actor_user_id=user["user_id"],
+                  detail={"reason": "bad_password"})
+            raise http_error("invalid_credentials", "密码不正确")
+        store = get_store()
+        factor = store_call(store.get_mfa_factor, user["user_id"])
+        status = (TOTP_OK if factor is None
+                  else verify_mfa_factor(user["user_id"], factor, req.code))
+        if status != TOTP_OK:
+            audit("mfa_disable_failed", request=request, actor_user_id=user["user_id"],
+                  detail={"reason": "replay" if status == TOTP_REPLAY else "bad_code"})
+            raise http_error("mfa_code_invalid", "验证码或恢复码不正确")
+        store_call(store.delete_mfa_factors, user["user_id"])
+        store_call(store.replace_recovery_codes, user["user_id"], [])
+        audit("mfa_disabled", request=request, actor_user_id=user["user_id"])
+        return {"ok": True}
+
+    @router.post("/api/auth/mfa/verify")
+    def mfa_verify(req: MfaCodeRequest, request: Request, response: Response) -> dict:
+        """登录第二步（step-up）：半程会话 + TOTP/恢复码 ⇒ 标记该会话已完成第二步。
+
+        需求 42：第二步成功后**轮换会话 token**（与登录一致），旧半程 token 立即失效，
+        防会话固定（攻击者预置的半程 token 不能借受害者的验证码「转正」）。
+        """
+        check_csrf(request)
+        user = pending_session_user(request)
+        if user is None:
+            raise http_error("unauthenticated", "请先登录")
+        if user.get("session_mfa_verified", True):
+            return {"user": public_user(user)}   # 幂等：已完成第二步
+        store = get_store()
+        factor = store_call(store.get_mfa_factor, user["user_id"])
+        if factor is None:
+            # 因子已在别处移除（如已关闭 MFA）：直接完成，避免把自己锁死
+            store_call(store.set_session_mfa_verified, user["session_token_hash"], True)
+            rotate_session_after_step_up(user, request, response)
+            return {"user": public_user(user)}
+        if not verify_limiter().allow(f"mfa-verify:{user['user_id']}"):
+            audit("mfa_verify_rate_limited", request=request, actor_user_id=user["user_id"])
+            raise http_error("rate_limited", "验证码尝试过于频繁，稍后再试")
+        status = verify_mfa_factor(user["user_id"], factor, req.code)
+        if status != TOTP_OK:
+            audit("mfa_verify_replay" if status == TOTP_REPLAY else "mfa_verify_failed",
+                  request=request, actor_user_id=user["user_id"])
+            raise http_error("mfa_code_invalid", "验证码或恢复码不正确")
+        store_call(store.set_session_mfa_verified, user["session_token_hash"], True)
+        audit("mfa_verified", request=request, actor_user_id=user["user_id"])
+        # 第二步完成后才判「新设备」：此时须排除本半程会话
+        rows = [row for row in store_call(store.list_sessions, user["user_id"])
+                if row.get("token_hash") != user["session_token_hash"]]
+        if is_new_device([device_key(row.get("user_agent"), row.get("ip")) for row in rows],
+                         request.headers.get("user-agent"), client_key(request)):
+            notify_new_login(user, request)
+        # 需求 42：轮换 token 放在新设备判定**之后**（否则新会话会把自己算进已知设备）
+        rotate_session_after_step_up(user, request, response)
+        return {"user": public_user(user)}
 
     return router
