@@ -171,3 +171,10 @@ py -3.13 -m pip_audit --path .deps
 | 12 | P5：测试计数/状态页/执行报告多处口径不一致 | 统一 1575 收集 / 1495 通过 / 80 跳过（另 1 模块级 skip 显式说明）；status/current、execution §0/§3/§4/§7 同步 | `check_doc_consistency`、`gen_figures --check` |
 
 **复审状态**：待跑全量 pytest + 7 守卫 + CI 首跑后给复审结论（B1–B12 逐项核销）。
+## 9. v0.3.0 发布记录（2026-11-22）
+
+- **发布提交**：`607328e release: v0.3.0`（CHANGELOG 收口 + FastAPI `version=0.3.0`）。
+- **CI**：run `44997939447` → **success**（7 job：lint 3.11/3.12/3.13、infra、frontend、e2e、security-windows）。
+- **Tag / Release**：annotated tag **`v0.3.0`**（dev 与 master 同步后指向发布提交）。
+- **Staging 部署**：首次自动部署因 GitHub runner→大陆服务器 SSH 断流失败（3 次重试，旧版本安全在线）；随后 `workflow_dispatch` 手动部署成功，且原失败 run rerun（attempt 2）亦成功；staging 运行 `aa49a68`（发布前最后一个代码提交），`/api/health/ready` 全绿。
+- **发布口径**：本批不改变对外 SLA/定价/合规声明；pip-audit CI 门禁仍未接入（网络受限，登记于 §3）。
