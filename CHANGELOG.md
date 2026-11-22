@@ -7,6 +7,7 @@
 
 ### Changed
 
+- **后端按域拆分第十三刀（rag 写域）**：`PATCH /api/rag/docs`、`POST /api/rag/docs/rechunk`、`POST /api/rag/docs/reembed` 与重建前置迁入 `web/backend/api/rag_write.py`（94 行），`main.py` 2841→2788 行；归属前置/限流/审计/状态校验以注入方式保持，rag API/管理测试全绿。
 - **后端按域拆分第十二刀（rag 只读域）**：`GET /api/rag/docs`、`GET /api/rag/docs/{doc_id}/chunks`、`GET /api/rag/usage` 与 Qdrant 回落聚合迁入 `web/backend/api/rag_read.py`（119 行），`main.py` 2920→2841 行；PG 台账/读侧口径/失败文案以注入方式保持，rag API/管理测试全绿；本刀起本地验证同时跑 mypy CI 目标。
 - **后端按域拆分第十一刀完（runs 重试）**：`POST /api/runs/{run_id}/retry` 与 `RETRYABLE_STATUSES`/`StartResponse` 迁入 `web/backend/api/runs_manage.py`（213 行），`main.py` 2979→2920 行；输入安全闸、幂等优先、准入事务、`retry_of` 血缘均以注入方式保持，重试/幂等回归测试全绿。runs 管理域收官。
 - **后端按域拆分第十一刀续（runs 管理：置顶/归档）**：`pin`/`unpin`/`archive`/`unarchive` 四条路由与归属前置迁入 `web/backend/api/runs_manage.py`（138 行），`main.py` 3031→2979 行；`OPEN_STATUSES` 以 getter 注入，进行中任务不可归档的语义不变，历史/置顶/归档测试全绿。
