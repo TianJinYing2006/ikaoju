@@ -44,7 +44,7 @@ from . import docx_render as docx_render_mod
 from . import export as export_mod
 from . import followup as followup_mod
 from . import mfa as mfa_service
-from . import passkeys, secretbox
+from . import passkeys
 from .agui import (
     FOLLOWUP_ANSWERED,
     FOLLOWUP_ASKED,
@@ -58,6 +58,7 @@ from .api.auth_credentials import build_auth_credentials_router
 from .api.auth_sessions import build_auth_sessions_router
 from .api.health import build_health_router
 from .api.meta import router as meta_router
+from .api.mfa import MfaCodeRequest, build_mfa_read_router
 from .api.ops import build_ops_router
 from .appeals import submit_appeal
 from .auth import (
@@ -94,7 +95,7 @@ from .hitl import (
 from .injection_guard import scan_injection
 from .mailer import get_mailer, new_login_email, password_reset_email
 from .metrics import METRICS
-from .mfa import MFA_ISSUER, TOTP_OK, TOTP_REPLAY
+from .mfa import TOTP_OK, TOTP_REPLAY
 from .moderation import (
     MAX_APPEAL_LENGTH,
     MAX_INSTRUCTIONS_LENGTH,
@@ -124,17 +125,6 @@ from .security_headers import (
     merge_connect_src,
 )
 from .store import ACTIVE_STATUSES, QuotaExceeded, RunStore
-from .totp import (
-    encode_secret as totp_encode_secret,
-)
-from .totp import (
-    hash_recovery_code,
-    new_recovery_codes,
-    new_totp_secret,
-)
-from .totp import (
-    provisioning_uri as totp_provisioning_uri,
-)
 from .upload_guard import (
     ALLOWED_EXT,
     UploadRejected,
@@ -827,6 +817,20 @@ app.include_router(build_auth_credentials_router(
 ))
 
 
+# 2026-11 后端按域拆分（第六刀）：MFA 读/绑定路由 status/begin/confirm。
+app.include_router(build_mfa_read_router(
+    get_store=lambda: store,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    require_session_user=lambda req: _require_session_user(req),
+    check_csrf=lambda req: _check_csrf(req),
+    audit=lambda action, **kwargs: _audit(action, **kwargs),
+    format_dt=lambda value: _iso(value),
+    require_mfa_ready=lambda: _require_mfa_ready(),
+    verify_totp_factor=lambda factor, code: _verify_totp_factor(factor, code),
+    enroll_limiter=lambda: MFA_ENROLL_LIMITER,
+))
+
+
 def _check_csrf(request: Request) -> None:
     """双提交 Cookie 校验（仅在启用鉴权后生效；登录/注册除外）。"""
     if not AUTH_REQUIRED:
@@ -1249,16 +1253,6 @@ def _verify_mfa_factor(user_id: str, factor: dict, code: str) -> str:
 
 # ------------------------------------------------------------------ MFA：TOTP + 恢复码（需求 20 P1-3）
 
-class MfaBeginRequest(BaseModel):
-    """P0-2c：开始绑定 TOTP 前必须重新输入当前密码（防被劫持会话绑定攻击者因子）。"""
-
-    current_password: str = Field(..., min_length=1, max_length=200)
-
-
-class MfaCodeRequest(BaseModel):
-    code: str = Field(..., min_length=4, max_length=32)
-
-
 class MfaDisableRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=200)
     code: str = Field("", max_length=32)
@@ -1266,77 +1260,6 @@ class MfaDisableRequest(BaseModel):
 
 def _iso(value) -> Optional[str]:
     return value.isoformat() if value is not None else None
-
-
-@app.get("/api/auth/mfa")
-def mfa_status(request: Request) -> dict:
-    """当前用户的 MFA 状态（前端「会话与安全」页用）。"""
-    user = _require_session_user(request)
-    factor = _store_call(store.get_mfa_factor, user["user_id"])
-    return {
-        "available": secretbox.configured(),
-        "enabled": factor is not None,
-        "type": factor["type"] if factor else None,
-        "confirmed_at": _iso(factor["confirmed_at"]) if factor else None,
-        "recovery_codes_remaining": (
-            _store_call(store.count_unused_recovery_codes, user["user_id"]) if factor else 0),
-    }
-
-
-@app.post("/api/auth/mfa/totp/begin")
-def mfa_totp_begin(req: MfaBeginRequest, request: Request) -> dict:
-    """开始绑定：生成新 secret（**仅本响应出现一次**）并暂存为未确认因子。
-
-    P0-2c：与 Passkey 添加一致，须重新输入当前密码 —— 仅凭会话 Cookie 不得绑定
-    第二因子（否则被盗会话可给账号绑定攻击者的 TOTP 并取走恢复码，受害者自锁）。
-    """
-    _check_csrf(request)
-    user = _require_session_user(request)
-    _require_mfa_ready()
-    if not MFA_ENROLL_LIMITER.allow(f"mfa-enroll:{user['user_id']}"):
-        _audit("mfa_enroll_rate_limited", request=request, actor_user_id=user["user_id"])
-        raise http_error("rate_limited", "MFA 操作过于频繁，稍后再试")
-    if not verify_password(user["password_hash"], req.current_password):
-        _audit("mfa_enroll_failed", request=request, actor_user_id=user["user_id"],
-               detail={"reason": "bad_password"})
-        raise http_error("invalid_credentials", "密码不正确")
-    if _store_call(store.get_mfa_factor, user["user_id"]) is not None:
-        raise http_error("mfa_already_enabled", "已启用 MFA；如需换绑请先关闭")
-    secret = new_totp_secret()
-    factor_id = uuid.uuid4().hex[:12]
-    _store_call(store.upsert_pending_mfa_factor, factor_id, user["user_id"],
-                secretbox.encrypt(secret))
-    _audit("mfa_enroll_started", request=request, actor_user_id=user["user_id"])
-    encoded = totp_encode_secret(secret)
-    return {"secret": encoded,
-            "otpauth_uri": totp_provisioning_uri(encoded, account=user["email"],
-                                                 issuer=MFA_ISSUER)}
-
-
-@app.post("/api/auth/mfa/totp/confirm")
-def mfa_totp_confirm(req: MfaCodeRequest, request: Request) -> dict:
-    """确认绑定：校验一次 TOTP ⇒ 置 confirmed + 生成恢复码（明文**仅此一次**返回）。"""
-    _check_csrf(request)
-    user = _require_session_user(request)
-    _require_mfa_ready()
-    if not MFA_ENROLL_LIMITER.allow(f"mfa-enroll:{user['user_id']}"):
-        _audit("mfa_enroll_rate_limited", request=request, actor_user_id=user["user_id"])
-        raise http_error("rate_limited", "MFA 操作过于频繁，稍后再试")
-    pending = _store_call(store.get_mfa_factor, user["user_id"], confirmed=False)
-    if pending is None:
-        raise http_error("mfa_not_started", "请先开始绑定（未找到待确认的因子）")
-    status = _verify_totp_factor(pending, req.code)
-    if status != TOTP_OK:
-        _audit("mfa_confirm_failed", request=request, actor_user_id=user["user_id"],
-               detail={"reason": "replay"} if status == TOTP_REPLAY else None)
-        raise http_error("mfa_code_invalid", "验证码不正确")
-    if not _store_call(store.confirm_mfa_factor, user["user_id"], pending["factor_id"]):
-        raise http_error("mfa_not_started", "待确认因子已失效，请重新绑定")
-    codes = new_recovery_codes()
-    _store_call(store.replace_recovery_codes, user["user_id"],
-                [hash_recovery_code(code) for code in codes])
-    _audit("mfa_enabled", request=request, actor_user_id=user["user_id"])
-    return {"ok": True, "recovery_codes": codes}
 
 
 @app.post("/api/auth/mfa/disable")
