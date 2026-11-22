@@ -390,6 +390,11 @@ def build_mcp_asgi() -> Tuple[Any, Any]:
         _log.error("DR_MCP_SERVER_ENABLED=true 但 DR_MCP_TOKEN 未配置 —— "
                    "MCP 入口 fail-closed（所有请求 401）")
 
+    # SDK 1.30+ 默认开启 DNS rebinding 防护（仅允许 localhost Host 头）。
+    # 本服务部署在 Caddy 后（对外域名随环境变化），边界由 Bearer 令牌 + 网络策略承担，
+    # 因此显式关闭该防护以保持 1.9 的兼容行为（升级前如实登记）。
+    from mcp.server.transport_security import TransportSecuritySettings
+
     mcp = FastMCP(
         config.mcp.server_name,
         instructions=("爱考据 iKaoju 研究能力（只读 + 创建研究）。"
@@ -397,6 +402,7 @@ def build_mcp_asgi() -> Tuple[Any, Any]:
         streamable_http_path="/",
         json_response=True,
         stateless_http=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
     mcp.add_tool(quick_search, name="quick_search",
                  description="快速搜索：同步返回检索结果（不创建研究任务）")

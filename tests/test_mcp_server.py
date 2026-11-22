@@ -51,7 +51,7 @@ def mcp_token(monkeypatch):
     monkeypatch.setattr(mcp_server, "MCP_TOKEN", TOKEN)
 
 
-def _rpc(method, params=None, *, token=TOKEN, path="/mcp/"):
+def _rpc(method, params=None, *, token=TOKEN, path="/"):
     """ASGI 级 JSON-RPC 调用（每次构建独立实例并驱动 session manager；零网络）。"""
     app, fastmcp = mcp_server.build_mcp_asgi()
     payload = {"jsonrpc": "2.0", "id": 1, "method": method}
@@ -85,7 +85,7 @@ def test_auth_rejects_missing_wrong_and_query_string_token(mcp_token):
     assert _rpc("initialize", _INIT_PARAMS, token=None).status_code == 401
     assert _rpc("initialize", _INIT_PARAMS, token="wrong").status_code == 401
     # 只认 Authorization 头：query-string 里的 token 不算数
-    r = _rpc("initialize", _INIT_PARAMS, token=None, path=f"/mcp/?token={TOKEN}")
+    r = _rpc("initialize", _INIT_PARAMS, token=None, path=f"/?token={TOKEN}")
     assert r.status_code == 401
 
 

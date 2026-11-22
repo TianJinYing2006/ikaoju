@@ -209,7 +209,7 @@ feature/<issue>-<slug> | fix/<issue>-<slug> | docs/<slug> | chore/<slug>
 
 - 覆盖率：先接入观测（PR 可见变化，待接入），暂不设阻断门槛；设门槛需 ADR。
 - 类型检查：渐进式 mypy（新代码 + 核心模块白名单，待接入），不做全仓一次性迁移。
-- 依赖：`pip-audit` 进 CI（待接入；首期只报告不阻塞，高危项必须有处置记录）；新增依赖“外科式”——最小集、写理由、`pip check`、更新 lock。
+- 依赖：`pip-audit -r requirements-lock.txt` 已进 CI（阻塞；runtime lock 须 0 漏洞；新增依赖“外科式”——最小集、写理由、`pip check`、更新 lock）。
 
 ---
 

@@ -6,7 +6,7 @@
 
 ## 0. 一句话结论
 
-**阶段 0（止血）全部完成；阶段 1 的 figures 自动校验、独立裁判脚手架与确定性回放完成，评测 v2 实跑未完成；阶段 2 完成了 RunContext / 节点写回 / 评测并发隔离 / RAG 作用域显式化 / run 级 TokenLedger（引擎不再依赖类级 LLM 计数器），评测工具类级汇总已迁移、runtime_profile/usage 已显式化；阶段 3 后端拆分完成第一刀（`api/meta.py` 薄路由层）与三处安全加固，完整拆分未做；阶段 4 完成仓库卫生、coverage/mypy 门禁、Windows 沙箱 job 与文档结构收敛；pip-audit 巡检完成、CI 门禁未加；阶段 5 完成 README 重写与本报告。** 计划中依赖外部条件（API key 跑评测、真实浏览器截图/录屏、GitHub runner 验证、生产部署权限）的项未完成，均如实登记在 §3。
+**阶段 0（止血）全部完成；阶段 1 的 figures 自动校验、独立裁判脚手架与确定性回放完成，评测 v2 实跑未完成；阶段 2 完成了 RunContext / 节点写回 / 评测并发隔离 / RAG 作用域显式化 / run 级 TokenLedger（引擎不再依赖类级 LLM 计数器），评测工具类级汇总已迁移、runtime_profile/usage 已显式化；阶段 3 后端拆分完成第一刀（`api/meta.py` 薄路由层）与三处安全加固，完整拆分未做；阶段 4 完成仓库卫生、coverage/mypy 门禁、Windows 沙箱 job 与文档结构收敛；pip-audit CI 门禁已接入（runtime lock 升级 mcp 后实测 0 漏洞）；阶段 5 完成 README 重写与本报告。** 计划中依赖外部条件（API key 跑评测、真实浏览器截图/录屏、GitHub runner 验证、生产部署权限）的项未完成，均如实登记在 §3。
 
 全量测试：**1575 收集 / 1495 通过 / 80 跳过**（pytest 汇总另计 1 个模块级 collection-skip）/ 0 失败（Python 3.13 + `.deps`，2026-11-22 本机）。
 6 个仓库守卫 + `tools/gen_figures.py --check` 全部通过。
@@ -60,7 +60,7 @@
 | 阶段 1：评测 v2（固定证据池回放、跨模型族独立裁判、人工抽检、RAG 评测集） | ⚠️ 部分 | **脚手架已完成**：独立裁判配置/provenance/CLI + **网络检索确定性回放**（`SEARCH_PROVIDER=replay` / `--replay-dir`，含 14 例测试）；**实跑未做**：需要真实 API key 与预算，arXiv/RAG 的 replay 仍待做 |
 | 阶段 2：RunContext / per-run 隔离 / 节点写回 / 消除类级计数与 contextvar | ⚠️ 部分 | RunContext + 写回 + per-run 已完成；RAG 作用域与**运行档位**均已显式注入（`rag_scope` / `profile`，尽头用 `use_profile` 恢复不泄漏）；**类级 LLM 计数器已删除**（引擎/评测/追问走 run 级账本）；**剩余**：`usage` 的 contextvar（逐调用记账 sink）待显式化 |
 | 阶段 3：后端拆分（app factory + routers + services + repositories） | ⚠️ 部分 | 完成**第一刀**：`help`/`legal` 只读路由拆到 `web/backend/api/meta.py`（`include_router` 装配，行为/路径不变），建立 `web/backend/api/` 薄路由层的模式；外加三处安全加固。`main.py` 仍 3,8xx 行，完整拆分方案与顺序见 §3 第 2 条 |
-| 阶段 4：coverage / mypy / pip-audit / Windows job / npm devDeps | ⚠️ 部分 | coverage（≥73%）、mypy 增量、Windows 安全 job 已接入；**pip-audit 工具已可用并完成一次巡检**（`.deps` 3 组告警：2 项 lock 已修复、soupsieve 已升级）；**CI 门禁仍待加**：`pip-audit -r requirements-lock.txt` 依赖 PyPI 解析/告警库，本机请求不稳定，未取得稳定的本地验证 |
+| 阶段 4：coverage / mypy / pip-audit / Windows job / npm devDeps | ⚠️ 部分 | coverage（≥73%）、mypy 增量、Windows 安全 job 已接入；**pip-audit 工具已可用并完成一次巡检**（`.deps` 3 组告警：2 项 lock 已修复、soupsieve 已升级）；**CI 门禁已接入**（2026-11-23）：`pip-audit -r requirements-lock.txt` 实测 **0 漏洞**（升级 mcp 1.9.4→1.30.0 修复 11 项 advisory；lock 增补 jsonschema/pyjwt/attrs/referencing/rpds-py/jsonschema-specifications）|
 | 阶段 4：icon-lab / ppt-report 移出、github 元数据 | ⚠️ 部分 | 仓库卫生完成；GitHub description/homepage 需远端权限，未改 |
 | 阶段 4：文档结构收敛 | ✅ 完成 | 新增 `docs/status/current.md` 单页状态；`docs/project-status.md` 转为历史长日志（加归档横幅与指针） |
 | 阶段 5：README 重写 + 截图 + 90s demo | ⚠️ 部分 | README 完成；截图/录屏未做（需构建前端 + 真实浏览器会话，未在本晚执行；`DR_DEMO=1` 路径可复现） |
@@ -74,7 +74,7 @@
 2. **后端拆分**：`web/backend/main.py` 3,846 行、66 个路由，与 `store`/`manager` 等模块级单例深度耦合；
    一次机械搬移的回归面不可控。建议按域分 6 个 PR（auth → runs/stream → rag → export/share → ops/meta → worker/runner），
    每 PR 先建 `web/backend/api/<domain>.py` 薄 router，再加契约测试。
-3. **覆盖率/类型/依赖扫描**：coverage 门禁（73%）、Windows 安全 job、**mypy 增量门禁**（runtime/replay/api，本机 Success）已接入；**pip-audit 巡检已执行**（`.deps` 3 组告警：pypdf/urllib3 在 lock 已修复、soupsieve 已升 4.1.3），CI 门禁待稳定网络下的锁文件审计。npm devDeps 审计未做。
+3. **覆盖率/类型/依赖扫描**：coverage 门禁（73%）、Windows 安全 job、**mypy 增量门禁**（runtime/replay/api，本机 Success）已接入；**pip-audit CI 门禁已接入**（runtime lock 0 漏洞；mcp 升级修复 11 项 advisory）；npm 生产依赖审计已由前端 job 门禁覆盖（`npm audit --omit=dev --audit-level=high`，实测 0 漏洞）。
 4. **截图/录屏**：需要 `npm ci && npm run build` 后用 Playwright 截 4 个真实页面；本晚优先保证代码与测试，
    该产物留待有浏览器环境时补。
 5. **Windows 沙箱测试进 CI**：已配置 `security-windows` job（2026-11-22）；
@@ -85,7 +85,7 @@
 1. **补评测 v2**（1~2 天，需 API key）：固定证据池回放 + 跨模型族裁判 + 50 条人工标注 + RAG 20 题集；
    重采一次基线后，把 figures 的「引用准确率」从多口径并列改为「当前口径 + 区间」。
 2. **后端拆分**（1~2 周）：按 §3.2 的 6 个 PR 顺序；先抽 `web/backend/api/meta.py`（legal/help/feedback，无状态耦合）做样板。
-3. **剩余 CI 质量门禁**（半天）：pip-audit + mypy 增量（coverage 与 Windows job 已完成）。
+3. ~~**剩余 CI 质量门禁**：pip-audit + mypy 增量~~（已完成：pip-audit 门禁接入、runtime lock 0 漏洞）。
 4. **呈现补齐**（半天）：4 张截图 + 90 秒 demo；GitHub description/homepage。
 5. **剩余 contextvar/类级计数收敛**（2~3 天）：在每个域拆分 PR 中顺带改为显式依赖，不做一次性大爆炸。
 
@@ -114,7 +114,7 @@ git checkout dev -- icon-lab ppt-report
 | 1 | 阶段 0 止血：eval 并发共享 graph / HITL 计账 / 压缩静默 / coverage fail-open，各带回归 | ✅ 完成 | `test_eval_per_run_isolation`(3) / `test_hitl_token_accounting`(4) / `test_context_compression`(+2) / `test_audit_p1_remediation`(+1) | — |
 | 2 | 阶段 1：figures 自动生成 + CI 守卫；评测确定性/独立裁判脚手架；陈旧数字清理 | ✅ 完成 | `tools/gen_figures.py --check` exit 0（CI step）；`search/replay.py` + `test_search_replay`(14)；`JudgeWithLedger` + `test_eval_judge_scaffold`(9)；README/figures 数字由生成物校验 | — |
 | 3 | 阶段 2：RunContext / per-run 隔离 / 节点纯函数化切片 / 消除类级计数器与 contextvar 隐式依赖 | ⚠️ 大部分 | ADR-0019/0020；`runtime/`（RunContext + TokenLedger + 注册表）；类级计数器已删除；RAG 作用域与运行档位显式注入；**usage sink 显式注册表已就位**（LLM emit 带 run_id，runner/worker 注册）；全量测试绿 | 研究主链路（LLM + web/RAG/arXiv/MCP 检索）usage 已走显式注册表；**文档摄取 / MCP server 的 sink 仍走兼容 contextvar**（非研究 run 执行单元）；**节点仍是方法**（依赖注入已集中，未拆纯函数模块） |
-| 4 | 阶段 4：CI 质量门禁与仓库卫生（非产品目录移出、文档结构收敛） | ⚠️ 大部分 | coverage ≥73%（实测 75.01%）、mypy 增量（6 files Success）、`security-windows` job；icon-lab/ppt-report 移出跟踪；`docs/status/current.md` 单页 + project-status 归档 | **pip-audit CI 门禁**：工具可用并完成巡检（soupsieve 已修），但 `-r requirements-lock.txt` 需稳定 PyPI 解析，本机网络未取得稳定验证；npm devDeps 审计未做 |
+| 4 | 阶段 4：CI 质量门禁与仓库卫生（非产品目录移出、文档结构收敛） | ⚠️ 大部分 | coverage ≥73%（实测 75.01%）、mypy 增量（6 files Success）、`security-windows` job；icon-lab/ppt-report 移出跟踪；`docs/status/current.md` 单页 + project-status 归档 | **pip-audit CI 门禁已接入**：升级 mcp 1.9.4→1.30.0 修复 11 项 advisory，lock 增补 6 个传递依赖后 `pip-audit -r requirements-lock.txt` 实测 0 漏洞；npm 生产依赖审计由前端 job 既有门禁覆盖（0 漏洞） |
 | 5 | 阶段 5：README 重写与完成情况报告 | ✅ 完成 | README 531→约 190 行（诚实评测口径/边界）；本报告 + ADR-0019/0020 + CHANGELOG | — |
 
 **结论**：5 项中 3 项完全完成、2 项主体完成。剩余均为**已定位、可继续**的收尾项，不涉及回滚风险；当前分支全量测试与守卫全绿，可随时合并或继续迭代。
@@ -122,7 +122,7 @@ git checkout dev -- icon-lab ppt-report
 ### 剩余项的执行建议
 
 1. **usage contextvar 显式化**：给 `Researcher._search_*` / `RAG` 调用链补 `run_id` 参数（来源 `state.run_id`），`emit_usage(record, run_id=...)` 走注册表；runner/worker 用 `register_usage_sink(run_id, sink)` 替代 push/pop（保留 `use_usage_sink` 兼容单测）。
-2. **pip-audit CI 门禁**：网络稳定后先 `pip-audit -r requirements-lock.txt` 取得一次绿，再加进 `lint-and-test`（或独立 job），对存量告警建立 ignore 清单并标注理由。
+2. ~~**pip-audit CI 门禁**~~ → 2026-11-23 已完成（runtime lock 0 漏洞；门禁在 `lint-and-test` 内，pip-audit 钉 2.10.1 按需安装）。
 3. **后端按域拆分**（计划中的后续批次，不属本次 objective）：先 `auth` → `runs/stream` → `rag` → `export/share` → `ops/meta`，每 PR 带契约测试。
 
 ## 7. 本批次已验证的证据
@@ -177,4 +177,4 @@ py -3.13 -m pip_audit --path .deps
 - **CI**：run `44997939447` → **success**（7 job：lint 3.11/3.12/3.13、infra、frontend、e2e、security-windows）。
 - **Tag / Release**：annotated tag **`v0.3.0`**（dev 与 master 同步后指向发布提交）。
 - **Staging 部署**：首次自动部署因 GitHub runner→大陆服务器 SSH 断流失败（3 次重试，旧版本安全在线）；随后 `workflow_dispatch` 手动部署成功，且原失败 run rerun（attempt 2）亦成功；staging 运行 `aa49a68`（发布前最后一个代码提交），`/api/health/ready` 全绿。
-- **发布口径**：本批不改变对外 SLA/定价/合规声明；pip-audit CI 门禁仍未接入（网络受限，登记于 §3）。
+- **发布口径**：本批不改变对外 SLA/定价/合规声明；pip-audit CI 门禁已于 2026-11-23 接入（runtime lock 0 漏洞）。
