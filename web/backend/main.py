@@ -53,9 +53,9 @@ from .agui import (
     REPORT_DELTA,
     sse_frame,
 )
+from .api.auth_credentials import build_auth_credentials_router
 from .api.auth_sessions import build_auth_sessions_router
 from .api.health import build_health_router
-from .api.meta import LEGAL_DIR, legal_version
 from .api.meta import router as meta_router
 from .api.ops import build_ops_router
 from .appeals import submit_appeal
@@ -75,7 +75,6 @@ from .auth import (
     normalize_email,
     token_hash,
     verify_password,
-    verify_password_or_dummy,
 )
 from .auth import (
     SESSION_COOKIE as SESSION_COOKIE_BASE,
@@ -804,6 +803,29 @@ app.include_router(build_auth_sessions_router(
 ))
 
 
+# 2026-11 后端按域拆分（第四刀）：账号凭据域路由 register/login/logout。
+app.include_router(build_auth_credentials_router(
+    get_store=lambda: store,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    audit=lambda action, **kwargs: _audit(action, **kwargs),
+    public_user=lambda user: _public_user(user),
+    client_key=lambda req: _client_key(req),
+    login_limiter=lambda: LOGIN_LIMITER,
+    login_account_limiter=lambda: LOGIN_ACCOUNT_LIMITER,
+    registration_enabled=lambda: REGISTRATION_ENABLED,
+    registration_daily_limit=lambda: REGISTRATION_DAILY_LIMIT,
+    email_domain_blocked=lambda email: _email_domain_blocked(email),
+    day_start_utc=lambda: _day_start_utc(),
+    reject_weak_password=lambda password, **kwargs: _reject_weak_password(password, **kwargs),
+    set_session_cookies=lambda resp, uid, req=None, **kwargs: _set_session_cookies(resp, uid, req, **kwargs),
+    clear_session_cookies=lambda resp: _clear_session_cookies(resp),
+    session_user=lambda req: _session_user(req),
+    session_cookie_name=lambda: SESSION_COOKIE,
+    notify_new_login=lambda user, req: _notify_new_login(user, req),
+    check_csrf=lambda req: _check_csrf(req),
+))
+
+
 def _check_csrf(request: Request) -> None:
     """双提交 Cookie 校验（仅在启用鉴权后生效；登录/注册除外）。"""
     if not AUTH_REQUIRED:
@@ -1195,129 +1217,9 @@ def _start_queued(*, topic: str, instructions: str, idempotency_key: Optional[st
     return row["run_id"]
 
 
-class RegisterRequest(BaseModel):
-    email: str = Field(..., max_length=254)
-    password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=200)
-    agree_terms: bool = Field(False, description="需求 25：必须勾选同意《用户协议》与《隐私政策》")
-
-
-class LoginRequest(BaseModel):
-    email: str = Field(..., max_length=254)
-    password: str = Field(..., max_length=200)
-
-
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., max_length=200)
     new_password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=200)
-
-
-@app.post("/api/auth/register")
-def auth_register(req: RegisterRequest, request: Request, response: Response) -> dict:
-    """开放注册：邮箱 + 密码 + 同意条款；成功后自动登录。"""
-    if not LOGIN_LIMITER.allow(f"register:{_client_key(request)}"):
-        raise http_error("rate_limited", "注册请求过于频繁，稍后再试")
-    if store is None:
-        raise http_error("persistence_unavailable", "账号功能需要任务库（DR_DATABASE_URL）")
-    if not REGISTRATION_ENABLED:
-        _audit("register_blocked", request=request, detail={"reason": "disabled"})
-        raise http_error("registration_disabled", "注册通道已关闭，请稍后再试")
-    email = normalize_email(req.email)
-    if not is_valid_email(email):
-        raise http_error("invalid_request", "邮箱格式不合法")
-    if not req.agree_terms:
-        raise http_error("invalid_request", "请先阅读并同意《用户协议》与《隐私政策》")
-    _reject_weak_password(req.password, email=email)
-    if _email_domain_blocked(email):
-        _audit("register_blocked", request=request, detail={"reason": "email_domain"})
-        raise http_error("email_domain_blocked", "该邮箱域名不支持注册，请使用常用邮箱")
-    if REGISTRATION_DAILY_LIMIT > 0:
-        created_today = _store_call(store.count_users_since, _day_start_utc())
-        if created_today >= REGISTRATION_DAILY_LIMIT:
-            _audit("register_blocked", request=request, detail={"reason": "daily_limit"})
-            raise http_error("registration_limit_reached", "今日注册名额已满，请明天再试")
-    user_id = uuid.uuid4().hex[:12]
-    try:
-        user = store.create_user(user_id, email, hash_password(req.password))
-    except Exception as exc:  # noqa: BLE001
-        if getattr(exc, "sqlstate", None) == "23505":
-            raise http_error("email_taken", "该邮箱已注册") from exc
-        raise http_error(
-            "persistence_unavailable",
-            safe_detail("注册失败", exc),
-        ) from exc
-    _store_call(store.touch_last_login, user["user_id"])
-    _set_session_cookies(response, user["user_id"], request)
-    # 需求 25：注册同意留档（PIPL 可举证；版本 = 文档内容 hash）
-    consent_versions = {
-        "terms": legal_version(LEGAL_DIR / "terms-of-service.md"),
-        "privacy": legal_version(LEGAL_DIR / "privacy-policy.md"),
-    }
-    _store_call(store.save_user_consents, user["user_id"],
-                [{"doc_type": doc_type, "version": version}
-                 for doc_type, version in consent_versions.items()],
-                ip_hash=hashlib.sha256(_client_key(request).encode("utf-8")).hexdigest()[:16])
-    _audit("register_success", request=request, actor_user_id=user["user_id"],
-           detail={"consents": consent_versions})
-    return {"user": _public_user(user)}
-
-
-@app.post("/api/auth/login")
-def auth_login(req: LoginRequest, request: Request, response: Response) -> dict:
-    """邮箱 + 密码登录；失败统一 401（不区分「用户不存在 / 密码错 / 已封禁」）。
-
-    P1-2：限流双维度 —— IP（`DR_LOGIN_RATE_PER_MINUTE`）+ 账号
-    （`DR_LOGIN_ACCOUNT_RATE_PER_MINUTE`，邮箱哈希作键，防定向撞库）。
-    """
-    email = normalize_email(req.email)
-    email_hash = hashlib.sha256(email.encode("utf-8")).hexdigest()[:16]
-    if (not LOGIN_LIMITER.allow(f"login:{_client_key(request)}")
-            or not LOGIN_ACCOUNT_LIMITER.allow(f"login-acct:{email_hash}")):
-        _audit("login_rate_limited", request=request, detail={"email_hash": email_hash})
-        raise http_error("rate_limited", "登录请求过于频繁，稍后再试")
-    if store is None:
-        raise http_error("persistence_unavailable", "账号功能需要任务库（DR_DATABASE_URL）")
-    user = _store_call(store.get_user_by_email, email)
-    # 无论用户是否存在/是否封禁都做一次 Argon2 校验，避免响应时间泄露邮箱是否注册
-    password_ok = verify_password_or_dummy(
-        user["password_hash"] if user is not None else None, req.password)
-    if user is None or user["status"] != "active" or not password_ok:
-        _audit("login_failed", request=request, detail={"email_hash": email_hash})
-        raise http_error("invalid_credentials", "邮箱或密码不正确")
-    _store_call(store.touch_last_login, user["user_id"])
-    # P1-1b：先看「该用户既有活跃会话」判断是否新设备，再建本会话（否则自己会被算进去）
-    prior = _store_call(store.list_sessions, user["user_id"])
-    new_device = is_new_device(
-        [device_key(row.get("user_agent"), row.get("ip")) for row in prior],
-        request.headers.get("user-agent"), _client_key(request))
-    # P1-3：MFA 用户先发「半程会话」，第二步验证通过才算登录完成。
-    # fail-closed：有因子但服务端密钥不可用 ⇒ 拒绝（防「删密钥即绕过第二步」）。
-    mfa_factor = _store_call(store.get_mfa_factor, user["user_id"])
-    if mfa_factor is not None and not secretbox.configured():
-        _audit("mfa_unavailable", request=request, actor_user_id=user["user_id"])
-        raise http_error("mfa_unavailable", "MFA 暂不可用（服务端密钥未配置），请联系管理员")
-    _set_session_cookies(response, user["user_id"], request,
-                         mfa_verified=(mfa_factor is None))
-    _audit("login_success", request=request, actor_user_id=user["user_id"])
-    if mfa_factor is not None:
-        _audit("mfa_challenge_issued", request=request, actor_user_id=user["user_id"])
-        return {"mfa_required": True}
-    if new_device:
-        _notify_new_login(user, request)
-    return {"user": _public_user(user)}
-
-
-@app.post("/api/auth/logout")
-def auth_logout(request: Request, response: Response) -> dict:
-    # 需求 42：登出是唯一「有会话却无 CSRF」的写路由，补齐双提交校验（防强制登出）。
-    _check_csrf(request)
-    user = _session_user(request)
-    token = request.cookies.get(SESSION_COOKIE)
-    if token and store is not None:
-        _store_call(store.revoke_session, token_hash(token))
-    if user is not None:
-        _audit("logout", request=request, actor_user_id=user["user_id"])
-    _clear_session_cookies(response)
-    return {"ok": True}
 
 
 # ------------------------------------------------------------------ MFA：TOTP + 恢复码（需求 20 P1-3）
