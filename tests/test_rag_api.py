@@ -164,3 +164,20 @@ def test_docs_returns_503_when_vector_store_unavailable(monkeypatch):
     response = TestClient(api.app).get("/api/rag/docs")
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "rag_unavailable"
+
+
+def test_ingest_unwritable_storage_is_structured_503(client: TestClient, monkeypatch):
+    """2026-11（取代 #121）：隔离区/临时目录不可写（OSError）必须结构化 503。
+
+    覆盖「named volume 属主错误 ⇒ 上传 500」的回归面，并断言客户端不回显异常原文（#324）。
+    """
+    def _boom(*_args, **_kwargs):
+        raise PermissionError("Permission denied: /var/lib/deepresearch/rag-quarantine/x")
+
+    monkeypatch.setattr(api, "stream_to_temp", _boom)
+    response = _upload(client)
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "rag_ingest_failed"
+    assert "Permission denied" not in detail["message"]
+    assert "PermissionError" not in detail["message"]

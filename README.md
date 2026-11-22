@@ -125,7 +125,7 @@ docs/                # 需求 45 篇、ADR 20 篇、评测结论、运维 runboo
 
 | 指标 | 当前值 | 采集口径 / 日期 |
 | --- | --- | --- |
-| 单元测试 | **1575 项**（2026-11-22 本机 Python 3.13 + 锁定依赖：1495 通过 / 80 跳过；另有 1 个模块级 collection-skip，pytest 汇总显示 81 skipped） | `pytest --collect-only`；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 |
+| 单元测试 | **1576 项**（2026-11-22 本机 Python 3.13 + 锁定依赖：1496 通过 / 80 跳过；另有 1 个模块级 collection-skip，pytest 汇总显示 81 skipped） | `pytest --collect-only`；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 |
 | 浏览器 E2E | **89 个用例 / 21 个 spec** | `npx playwright test --list`；desktop + mobile 双 project，`DR_DEMO=1` |
 
 - **CI**：ruff + Python 3.11/3.12/3.13 矩阵（3.13 档带 **coverage 门禁 ≥73%**）+
