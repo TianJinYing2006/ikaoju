@@ -178,3 +178,10 @@ py -3.13 -m pip_audit --path .deps
 - **Tag / Release**：annotated tag **`v0.3.0`**（dev 与 master 同步后指向发布提交）。
 - **Staging 部署**：首次自动部署因 GitHub runner→大陆服务器 SSH 断流失败（3 次重试，旧版本安全在线）；随后 `workflow_dispatch` 手动部署成功，且原失败 run rerun（attempt 2）亦成功；staging 运行 `aa49a68`（发布前最后一个代码提交），`/api/health/ready` 全绿。
 - **发布口径**：本批不改变对外 SLA/定价/合规声明；pip-audit CI 门禁已于 2026-11-23 接入（runtime lock 0 漏洞）。
+
+## 10. v0.3.1 发布记录（2026-11-23）
+
+- **发布内容**：后端按域拆分 19 刀（`health`/`ops`/`auth_sessions`/`auth_credentials`/`mfa` 服务+路由/`passkey` 服务+路由/`runs_manage`/`rag_read`/`rag_write`/`rag_admin`/`rag_ingest`/`share_manage`/`share_public`/`export_report`/`export_jobs`），`main.py` 3861→2284 行；pip-audit CI 门禁 + mcp 1.9.4→1.30.0（11 项 advisory）；README 截图 + 90s demo。
+- **验证口径**：全量 pytest 1496 passed / 81 skipped / 0 failed；ruff；mypy 21 files；6 个文档/前端守卫；PR CI 7/7；staging 部署成功。
+- **版本/分支**：`v0.3.1` tag；dev==master 同步后发布。
+- **未纳入本版**：runs 执行控制与 SSE（start/status/cancel/stream/follow-up）仍在 `main.py`，列为下一批次；npm devDependencies 存量漏洞单独议题。

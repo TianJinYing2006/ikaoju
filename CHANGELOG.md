@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-23
+
+> 2026-11-23「后端按域拆分 + 依赖安全 + 界面演示」批次：13 个 backend api/服务模块抽取（`main.py` 3861→2284 行）、pip-audit CI 门禁与 mcp 安全升级、README 截图 + 90s demo。
+
 ### Security
 
 - **依赖安全：`mcp` 1.9.4 → 1.30.0**，修复 11 项 advisory（PYSEC-2026-1617/1618/3482/3483、CVE-2026-59951/116685/115563）；runtime lock 增补 `jsonschema` / `pyjwt` / `attrs` / `referencing` / `rpds-py` / `jsonschema-specifications`，`pip-audit -r requirements-lock.txt` 实测 **0 漏洞**。
@@ -147,6 +151,7 @@
 
 W1–W6 里程碑版本（初始研究引擎、Web 工作台与基础部署）。
 
+[0.3.1]: https://github.com/TianJinYing2006/DeepResearch/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/TianJinYing2006/DeepResearch/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/TianJinYing2006/DeepResearch/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/TianJinYing2006/DeepResearch/releases/tag/v0.1.0

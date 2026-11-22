@@ -131,7 +131,7 @@ from .usage import make_store_sink
 logger = logging.getLogger(__name__)
 
 
-app = FastAPI(title="爱考据 iKaoju", version="0.3.0")
+app = FastAPI(title="爱考据 iKaoju", version="0.3.1")
 
 # P1-8：OpenTelemetry（默认关闭；OTLP 端点 / Prometheus 开关任一存在才启用）
 OTEL_ENABLED = setup_otel("deepresearch-api")

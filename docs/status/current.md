@@ -6,7 +6,7 @@
 > 批次级完成情况见 [`docs/plan/2026-11-execution.md`](../plan/2026-11-execution.md)；
 > 对外数字见 [`docs/figures.md`](../figures.md)。
 
-## 1. 稳定可用（v0.3.0 主线）
+## 1. 稳定可用（v0.3.1 主线）
 
 | 能力 | 证据/入口 |
 | --- | --- |
