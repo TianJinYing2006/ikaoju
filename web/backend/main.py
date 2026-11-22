@@ -38,7 +38,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from config import config
-from research_engine.search.base import KNOWN_PROVIDERS
 from research_engine.usage import pop_usage_sink, push_usage_sink
 
 from . import docx_render as docx_render_mod
@@ -54,10 +53,10 @@ from .agui import (
     REPORT_DELTA,
     sse_frame,
 )
-from .alerts import alert_webhook_url, collect_alerts
 from .api.health import build_health_router
 from .api.meta import LEGAL_DIR, legal_version
 from .api.meta import router as meta_router
+from .api.ops import build_ops_router
 from .appeals import submit_appeal
 from .auth import (
     CSRF_COOKIE as CSRF_COOKIE_BASE,
@@ -112,7 +111,7 @@ from .otel import (
     setup_otel,
 )
 from .persistence import OPEN_STATUSES
-from .profiles import DEFAULT_PROFILE, PROFILES, profile_options, resolve_profile
+from .profiles import DEFAULT_PROFILE, PROFILES, resolve_profile
 from .queue import RunQueue
 from .ratelimit import make_limiter
 from .runner import RunManager, _estimate_cost_cny
@@ -586,59 +585,6 @@ class StartResponse(BaseModel):
 
 
 #: 搜索源展示名 —— 新增 provider 时在此登记即可被前端 /api/options 列出
-_PROVIDER_LABELS = {"bocha": "博查", "tavily": "Tavily"}
-
-
-def _provider_has_key(name: str) -> bool:
-    """该搜索源是否配了 key（决定前端是否把它列为可选）。"""
-    if name == "bocha":
-        return bool(config.search.bocha_api_key)
-    if name == "tavily":
-        return bool(config.search.tavily_api_key)
-    return False
-
-
-@app.get("/api/options")
-def options() -> dict:
-    """前端运行选项：可用的搜索源 + 学术检索默认值。
-
-    只把**已配 key** 的源列为可用 —— 否则用户选了没 key 的源，整场研究每跳都
-    降级为零结果，跑完了才发现白跑（博查额度耗尽正是这个情形，只能靠 403 事后发现）。
-    ⚠️ 已配 key ≠ 额度充足：额度耗尽只能在调用时由 provider 报出。
-    """
-    providers = [
-        {"value": name, "label": _PROVIDER_LABELS.get(name, name),
-         "available": _provider_has_key(name)}
-        for name in KNOWN_PROVIDERS
-    ]
-    return {
-        "search_providers": providers,
-        "default_provider": config.search.provider,
-        "enable_arxiv_default": config.search.enable_arxiv,
-        "max_total_hops_default": config.research.max_total_hops,
-        "max_subquestions_default": config.research.max_subquestions,
-        # P0 profile 固化：前端只展示档位（底层参数不可提交，请求体同名字段被忽略）
-        "profiles": profile_options(),
-        "default_profile": DEFAULT_PROFILE,
-        # P1-2 / P1-3：把后端**实际生效**的闸值下发给前端，前端才能显示剩余时间
-        # 与「已有研究在运行」提示，而不是靠猜。
-        "run_timeout_seconds": manager.run_timeout_seconds,
-        "max_concurrent_runs": manager.max_concurrent_runs,
-        # P4-A / P6-A：前端据此决定是否展示登录页（未开启鉴权时保持匿名可用）
-        "auth_required": AUTH_REQUIRED,
-        # 需求 25：错误追踪（DSN 空 = 前端不初始化，零网络请求）
-        "sentry_dsn": config.observability.sentry_dsn_frontend,
-        "sentry_environment": config.observability.sentry_environment,
-        "release": config.observability.sentry_release,
-        # 需求 26：报告只读分享开关（前端据此隐藏分享入口）
-        "share_enabled": SHARE_ENABLED,
-        # 需求 36 H3：报告后追问开关（前端据此决定是否显示追问入口）
-        "followup_enabled": bool(config.hitl.followup_enabled),
-        # 需求 20 P1-2：Passkey 可用性 + RP ID（前端据此判断当前域名是否可注册/登录）
-        "webauthn": {"available": passkeys.enabled(), "rp_id": passkeys.rp_id()},
-    }
-
-
 def _queue_depth() -> Optional[int]:
     """队列深度：以任务库 QUEUED 计数为准（P0-2）；无库时回落 Redis（仅唤醒信号）。"""
     if store is not None:
@@ -816,6 +762,28 @@ app.include_router(build_health_router(
     get_worker_max_age=lambda: WORKER_HEARTBEAT_MAX_AGE_SECONDS,
     get_object_store=lambda: get_object_store(),
     ops_authorized=lambda req: _ops_authorized(req),
+    queue_depth=lambda: _queue_depth(),
+))
+
+
+# 2026-11 后端按域拆分（第二刀）：运维域路由 options/metrics/ops-alerts。
+# 同上：依赖以 getter 注入，getter 在请求时读取 main 模块级属性（测试 monkeypatch 生效）。
+app.include_router(build_ops_router(
+    get_store=lambda: store,
+    get_manager=lambda: manager,
+    get_execution_mode=lambda: EXECUTION_MODE,
+    get_auth_required=lambda: AUTH_REQUIRED,
+    get_share_enabled=lambda: SHARE_ENABLED,
+    get_monthly_budget=lambda: MONTHLY_BUDGET_CNY,
+    get_worker_max_age=lambda: WORKER_HEARTBEAT_MAX_AGE_SECONDS,
+    get_alert_thresholds=lambda: {
+        "http_5xx_rate_pct": ALERT_5XX_RATE_PCT,
+        "queue_depth": ALERT_QUEUE_DEPTH,
+        "stale_runs": ALERT_STALE_RUNS,
+        "monthly_pct": ALERT_MONTHLY_PCT,
+    },
+    require_ops=lambda req: _require_ops(req),
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
     queue_depth=lambda: _queue_depth(),
 ))
 
@@ -2358,94 +2326,6 @@ def quota(request: Request) -> dict:
 
 
 # ------------------------------------------------------------------ 可观测与告警（P8-A）
-
-
-def _runs_metrics_24h() -> dict:
-    if store is None:
-        return {}
-    counts = _store_call(store.status_counts_since, datetime.now(UTC) - timedelta(hours=24))
-    total = sum(counts.values())
-    return {
-        "window_hours": 24,
-        "by_status": counts,
-        "total": total,
-        "success_rate": round(counts.get("SUCCEEDED", 0) / total, 4) if total else None,
-        "failure_rate": round(counts.get("FAILED", 0) / total, 4) if total else None,
-        "timeout_rate": round(counts.get("TIMED_OUT", 0) / total, 4) if total else None,
-        "lost": counts.get("LOST", 0),
-    }
-
-
-@app.get("/api/metrics")
-def metrics_endpoint(request: Request) -> dict:
-    """运行指标（P8-A）：进程内计数 + 任务库实时聚合；**不含任何用户内容 / PII**。
-
-    P0-9：应用层鉴权 —— 配置 `DR_OPS_TOKEN` 时要求 `X-Ops-Token`；staging/生产
-    未配置 token 一律 401（反代限制来源只作纵深）。多实例下进程内计数只代表单实例。
-    """
-    _require_ops(request)
-    snapshot = METRICS.snapshot()
-    snapshot.update({
-        "persistence": store is not None,
-        "execution_mode": EXECUTION_MODE,
-        "active_runs": manager.active_runs,
-        "queue_depth": _queue_depth(),
-        "runs_24h": _runs_metrics_24h(),
-        "stale_leases": _store_call(store.count_stale_leases) if store is not None else None,
-        "month_cost_cny": round(_store_call(store.month_cost_cny), 4) if store is not None else None,
-        "month_budget_cny": MONTHLY_BUDGET_CNY or None,
-        # P0-7：注销清理进度（pending/in_progress/completed/abandoned）
-        "deletions": (_store_call(store.count_deletions_by_status) if store is not None else None),
-        # P1-3：活跃 worker 数（心跳新鲜度窗口见 DR_WORKER_HEARTBEAT_MAX_AGE_SECONDS）
-        "workers_live": (_store_call(store.count_live_workers,
-                                     within_seconds=WORKER_HEARTBEAT_MAX_AGE_SECONDS)
-                         if store is not None else None),
-    })
-    return snapshot
-
-
-@app.get("/api/ops/alerts")
-def ops_alerts(request: Request) -> dict:
-    """告警判定（P8-A / P2-6）：按阈值评估当前指标；**外送**由 Worker 统一走 webhook（见 alerts.py）。
-
-    P0-9：与 `/api/metrics` 同一应用层鉴权（DR_OPS_TOKEN / fail-closed）。
-    """
-    _require_ops(request)
-    queue_depth = _queue_depth()
-    stale = _store_call(store.count_stale_leases) if store is not None else 0
-    monthly = _store_call(store.month_cost_cny) if store is not None else 0.0
-    deletions = _store_call(store.count_deletions_by_status) if store is not None else {}
-    workers_live = (
-        _store_call(store.count_live_workers,
-                    within_seconds=WORKER_HEARTBEAT_MAX_AGE_SECONDS)
-        if store is not None else None
-    )
-    overdue_appeals = (
-        _store_call(store.count_appeals_overdue, datetime.now(UTC))
-        if store is not None else 0
-    )
-    alerts = collect_alerts(
-        thresholds={
-            "http_5xx_rate_pct": ALERT_5XX_RATE_PCT,
-            "queue_depth": ALERT_QUEUE_DEPTH,
-            "stale_runs": ALERT_STALE_RUNS,
-            "monthly_pct": ALERT_MONTHLY_PCT,
-        },
-        http=METRICS.snapshot()["http"],
-        queue_depth=queue_depth,
-        stale_leases=stale,
-        deletions=deletions,
-        month_cost=monthly,
-        month_budget=MONTHLY_BUDGET_CNY,
-        workers_live=workers_live,
-        execution_mode=EXECUTION_MODE,
-        overdue_appeals=overdue_appeals,
-    )
-    return {"ok": True, "alert_count": len(alerts), "alerts": alerts,
-            "webhook_configured": bool(alert_webhook_url())}
-
-
-# ------------------------------------------------------------------ 内容安全与合规文本（P7-A）
 
 
 class AppealRequest(BaseModel):

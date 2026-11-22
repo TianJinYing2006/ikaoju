@@ -7,6 +7,7 @@
 
 ### Changed
 
+- **后端按域拆分第二刀（ops 域）**：`/api/options`、`/api/metrics`、`/api/ops/alerts` 从 `main.py` 抽到 `web/backend/api/ops.py`（178 行），`main.py` 3753→3633 行（-120）；依赖注入同 health 域，现有选项/指标/告警测试全绿。
 - **后端按域拆分第一刀（health 域）**：`/api/health`、`/api/health/live`、`/api/health/ready` 从 `main.py` 抽到 `web/backend/api/health.py`，依赖由组合根以 getter 注入；`main.py` 3861→3753 行（-108），新增 `api/health.py` 159 行。路由/响应/安全披露语义不变，既有健康与运维测试全绿。
 
 ### Fixed
