@@ -59,6 +59,7 @@ from .api.health import build_health_router
 from .api.meta import router as meta_router
 from .api.mfa import build_mfa_router
 from .api.ops import build_ops_router
+from .api.rag_read import build_rag_read_router
 from .api.runs_manage import StartResponse, build_runs_manage_router
 from .api.webauthn import build_webauthn_manage_router
 from .appeals import submit_appeal
@@ -870,6 +871,17 @@ app.include_router(build_runs_manage_router(
     request_fingerprint=lambda topic, instructions, name: _request_fingerprint(topic, instructions, name),
     idempotent_existing=lambda user_id, key, fingerprint: _idempotent_existing(user_id, key, fingerprint),
     execution_mode=lambda: EXECUTION_MODE,
+))
+
+
+# 2026-11 后端按域拆分（第十二刀）：知识库只读路由 docs/chunks/usage。
+app.include_router(build_rag_read_router(
+    get_store=lambda: store,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    require_user=lambda req: _require_user(req),
+    format_dt=lambda value: _iso(value),
+    failed_detail=lambda: _RAG_FAILED_DETAIL,
+    total_quota_mb=lambda: RAG_TOTAL_MB,
 ))
 
 
@@ -1907,56 +1919,6 @@ def rag_delete_doc(request: Request, doc_id: str = Query(..., max_length=128)) -
     return {"ok": True, "doc_id": doc_id}
 
 
-def _rag_docs_from_qdrant(user_id: Optional[str]) -> dict:
-    """本地零依赖回落：无任务库时从 Qdrant 聚合（无台账字段）。"""
-    from research_engine.rag.scope import RagScope
-    from research_engine.rag.store import VectorStore
-
-    vector_store = VectorStore()
-    reason = vector_store.unavailable_reason
-    if reason:
-        raise http_error(
-            "rag_unavailable",
-            "知识库当前不可用（Qdrant 未配置或连不上）",
-            detail=vector_store.last_error or reason,
-        )
-    counts: dict[str, dict] = {}
-    for payload in vector_store.scroll_all(scope=RagScope(user_id=user_id)):
-        doc_id = str(payload.get("doc_id") or "")
-        source = payload.get("source") or doc_id or "(未命名)"
-        key = doc_id or source
-        entry = counts.setdefault(key, {"doc_id": doc_id, "source": source, "chunks": 0})
-        entry["chunks"] += 1
-    return {"docs": sorted(counts.values(), key=lambda item: item["source"])}
-
-
-@app.get("/api/rag/docs")
-def rag_docs(request: Request) -> dict:
-    """知识库文档清单（需求 23：**PG 台账为准**；本地零依赖回落 Qdrant 聚合）。
-
-    返回状态 / 大小 / 块数 / 失败原因 / 活动版本 / 展示名 / 标签 —— 上传后不再是黑盒。
-    """
-    user_id = _require_user(request)
-    if store is None:
-        return _rag_docs_from_qdrant(user_id)
-    rows = _store_call(store.list_rag_docs, user_id)
-    return {"docs": [
-        {
-            "doc_id": row["doc_id"],
-            "source": row["source"],
-            "display_name": row.get("display_name"),
-            "tags": list(row.get("tags") or []),
-            "status": row["status"],
-            "chunks": row.get("chunks") or 0,
-            "size_bytes": row.get("size_bytes"),
-            "created_at": _iso(row.get("created_at")),
-            "error": _RAG_FAILED_DETAIL if row.get("last_error") else None,
-            "active_generation": row.get("active_generation"),
-        }
-        for row in rows
-    ]}
-
-
 class RagDocMetaRequest(BaseModel):
     doc_id: str = Field(..., max_length=128)
     display_name: Optional[str] = Field(None, max_length=120)
@@ -1977,38 +1939,6 @@ def _rag_owned_doc(request: Request, doc_id: str) -> tuple[Optional[str], dict]:
     if row is None:
         raise http_error("ingestion_not_found", f"文档不存在：{doc_id}")
     return user_id, row
-
-
-@app.get("/api/rag/docs/{doc_id}/chunks")
-def rag_doc_chunks(doc_id: str, request: Request,
-                   generation: Optional[int] = Query(None, ge=1),
-                   offset: int = Query(0, ge=0),
-                   limit: int = Query(20, ge=1, le=100)) -> dict:
-    """分块预览（需求 23）：默认活动版本；locator 供引用回溯定位。"""
-    if store is None:
-        raise http_error("persistence_unavailable", "分块预览需要任务库（DR_DATABASE_URL）")
-    user_id = _require_user(request)
-    row = _store_call(store.get_rag_doc_for_user, doc_id, user_id)
-    if row is None:
-        raise http_error("ingestion_not_found", f"文档不存在：{doc_id}")
-    active = row.get("active_generation")
-    target = generation or active
-    if target is None:
-        return {"doc_id": doc_id, "generation": None, "active_generation": active,
-                "total": 0, "chunks": []}
-    chunks, total = _store_call(store.list_rag_chunks, doc_id, int(target),
-                                offset=offset, limit=limit)
-    return {
-        "doc_id": doc_id,
-        "generation": int(target),
-        "active_generation": active,
-        "total": total,
-        "chunks": [
-            {"chunk_index": row["chunk_index"], "chunk_id": row["chunk_id"],
-             "text": row["text"], "locator": row.get("locator") or {}}
-            for row in chunks
-        ],
-    }
 
 
 @app.patch("/api/rag/docs")
@@ -2064,15 +1994,6 @@ def rag_rechunk(req: RagRebuildRequest, request: Request) -> dict:
 def rag_reembed(req: RagRebuildRequest, request: Request) -> dict:
     """重新嵌入（需求 23）：同分块换向量 → 新版本切换。"""
     return _rag_requeue(request, req.doc_id, "reembed")
-
-
-@app.get("/api/rag/usage")
-def rag_usage(request: Request) -> dict:
-    """知识库用量（需求 23）：已用字节 + 可选总配额（`DR_RAG_TOTAL_MB`，0=不限）。"""
-    user_id = _require_user(request)
-    used = _store_call(store.rag_usage_bytes, user_id) if store is not None else 0
-    quota = int(RAG_TOTAL_MB * 1024 * 1024) if RAG_TOTAL_MB and RAG_TOTAL_MB > 0 else None
-    return {"used_bytes": used, "quota_bytes": quota}
 
 
 @app.post("/api/research/{run_id}/cancel")
