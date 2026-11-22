@@ -50,6 +50,7 @@ from .agui import (
 )
 from .api.auth_credentials import build_auth_credentials_router
 from .api.auth_sessions import build_auth_sessions_router
+from .api.export_jobs import build_export_jobs_router
 from .api.export_report import build_export_report_router
 from .api.health import build_health_router
 from .api.meta import router as meta_router
@@ -82,7 +83,6 @@ from .auth import (
 from .auth import (
     SESSION_COOKIE as SESSION_COOKIE_BASE,
 )
-from .download_names import build_export_filename, content_disposition
 from .egress import build_egress_snapshot
 from .errors import ApiError, error_payload, http_error, safe_detail
 from .hitl import (
@@ -954,6 +954,40 @@ app.include_router(build_export_report_router(
     authorize_run=lambda req, rid: _authorize_run(req, rid),
     enforce_output_policy=lambda rid: _enforce_output_policy(rid),
     artifact_text=lambda rid, kind: _artifact_text(rid, kind),
+))
+
+
+#: 导出作业参数（保留在组合根：测试 monkeypatch 与运行期 env 同源）
+EXPORT_PDF_MAX_INPUT_BYTES = int(_env_number("DR_EXPORT_PDF_MAX_INPUT_BYTES", 2 * 1024 * 1024))
+EXPORT_RESULT_TTL_SECONDS = int(_env_number("DR_EXPORT_RESULT_TTL_SECONDS", 900))
+_export_result_redis = None
+
+
+def _export_result_store():
+    """结果通道客户端（专用非持久化 Redis；未配置 ⇒ None ⇒ 结构化不可用）。"""
+    global _export_result_redis
+    url = (os.getenv("DR_EXPORT_REDIS_URL") or "").strip()
+    if _export_result_redis is None and url:
+        import redis as redis_lib
+
+        _export_result_redis = redis_lib.Redis.from_url(url)
+    return _export_result_redis
+
+# 2026-11 后端按域拆分（第十九刀）：异步 PDF 导出作业（export 域收官）。
+app.include_router(build_export_jobs_router(
+    get_export_store=lambda: _export_store(),
+    get_store=lambda: store,
+    get_manager=lambda: manager,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    authorize_run=lambda req, rid: _authorize_run(req, rid),
+    check_csrf=lambda req: _check_csrf(req),
+    enforce_output_policy=lambda rid: _enforce_output_policy(rid),
+    audit=lambda action, **kwargs: _audit(action, **kwargs),
+    artifact_text=lambda rid, kind: _artifact_text(rid, kind),
+    max_input_bytes=lambda: EXPORT_PDF_MAX_INPUT_BYTES,
+    result_ttl=lambda: EXPORT_RESULT_TTL_SECONDS,
+    get_result_store=lambda: _export_result_store(),
+    limiter_redis_url=lambda: _LIMITER_REDIS_URL,
 ))
 
 
@@ -1985,183 +2019,6 @@ def _artifact_text(run_id: str, kind: str) -> Optional[str]:
         except Exception:  # noqa: BLE001
             return None
     return body
-
-
-# ---------------------------------------------------------------- PDF 异步导出作业（需求 38 F2）
-
-
-#: 输入预检上限（与 export 服务同口径；早拒可避免无谓作业）
-EXPORT_PDF_MAX_INPUT_BYTES = int(_env_number("DR_EXPORT_PDF_MAX_INPUT_BYTES", 2 * 1024 * 1024))
-EXPORT_RESULT_TTL_SECONDS = int(_env_number("DR_EXPORT_RESULT_TTL_SECONDS", 900))
-_EXPORT_REDIS_URL = (os.getenv("DR_EXPORT_REDIS_URL") or "").strip()
-_EXPORT_WAKE_KEY = "dr:export:wake"
-_EXPORT_RESULT_KEY_PREFIX = "dr:export:result:"
-_export_result_redis = None
-_export_wake_redis = None
-
-
-def _export_result_store():
-    """结果通道客户端（专用非持久化 Redis；未配置 ⇒ None ⇒ 结构化不可用）。"""
-    global _export_result_redis
-    if _export_result_redis is None and _EXPORT_REDIS_URL:
-        import redis as redis_lib
-
-        _export_result_redis = redis_lib.Redis.from_url(_EXPORT_REDIS_URL)
-    return _export_result_redis
-
-
-def _push_export_wake() -> None:
-    """唤醒信号（主 Redis；best-effort——丢失由 export 服务 2s 轮询兜底）。"""
-    global _export_wake_redis
-    if not _LIMITER_REDIS_URL:
-        return
-    try:
-        if _export_wake_redis is None:
-            import redis as redis_lib
-
-            _export_wake_redis = redis_lib.Redis.from_url(_LIMITER_REDIS_URL)
-        _export_wake_redis.lpush(_EXPORT_WAKE_KEY, "1")
-    except Exception:  # noqa: BLE001 —— 唤醒是旁路
-        pass
-
-
-class ExportJobRequest(BaseModel):
-    """v1 仅支持 kind=pdf（DOCX 为轻量同步生成，不走作业）。"""
-
-    kind: str = Field("pdf", pattern="^pdf$")
-
-
-def _export_job_or_404(run_id: str, export_id: str) -> dict:
-    es = _export_store()
-    if es is None:
-        raise http_error("persistence_unavailable", "导出作业需要任务库（DR_DATABASE_URL）")
-    job = _store_call(es.get_export_job, export_id)
-    if job is None or job.get("run_id") != run_id:
-        raise http_error("export_job_not_found", f"导出作业不存在：{export_id}")
-    return job
-
-
-@app.post("/api/research/{run_id}/export-jobs", status_code=202)
-def create_export_job(run_id: str, req: ExportJobRequest, request: Request) -> dict:
-    """需求 38 F2：创建 PDF 导出作业（异步；202 + export_id）。
-
-    - 前置：所有权 + CSRF + 输出 gate（flagged/under-review 阻断，与导出同口径）
-      + run 终局且有报告 + **输入字节预检**（早拒）；
-    - 幂等：同一 run 的进行中作业或未过期结果直接复用（request_hash 唯一约束兜底并发）；
-    - 结果 bytes 由专用 export 服务写专用非持久化 Redis；PG 保存权威状态与结果元数据。
-    """
-    owner = _authorize_run(request, run_id) or ""
-    _check_csrf(request)
-    _enforce_output_policy(run_id)
-    es = _export_store()
-    if es is None:
-        raise http_error("persistence_unavailable", "导出作业需要任务库（DR_DATABASE_URL）")
-    row = _store_call(es.get_run, run_id)
-    if row is None:
-        raise http_error("run_id_not_found", f"run_id 不存在：{run_id}")
-    if not row.get("finished_at"):
-        raise http_error("report_not_ready", "研究尚未结束，暂无报告可导出")
-    if store is None:  # 内存 / DR_DEMO：报告在 manager，无持久化产物可预检
-        if not manager.has_result(run_id):
-            raise http_error("report_unavailable", "本次运行没有产出报告")
-    else:
-        report_text = _artifact_text(run_id, "report_md") or ""
-        if not report_text.strip():
-            raise http_error("report_unavailable", "本次运行没有产出报告")
-        if len(report_text.encode()) > EXPORT_PDF_MAX_INPUT_BYTES:
-            raise http_error(
-                "export_too_large",
-                f"报告超过 PDF 导出上限（{EXPORT_PDF_MAX_INPUT_BYTES} 字节），请改用 md/json",
-                detail=f"report_bytes={len(report_text.encode())}")
-    request_hash = hashlib.sha256(f"{run_id}|pdf|{owner}".encode()).hexdigest()
-    existing = _store_call(es.find_reusable_export_job, request_hash)
-    if existing is not None:
-        return {"export_id": existing["job_id"], "status": existing["status"], "reused": True}
-    job_id = uuid.uuid4().hex[:12]
-    try:
-        job = _store_call(es.create_export_job, job_id, run_id=run_id,
-                          user_id=owner, request_hash=request_hash)
-    except Exception as exc:  # noqa: BLE001 —— 并发同指纹冲突（唯一索引）⇒ 复用既有作业
-        if getattr(exc, "sqlstate", None) == "23505":
-            existing = _store_call(es.find_reusable_export_job, request_hash)
-            if existing is not None:
-                return {"export_id": existing["job_id"], "status": existing["status"],
-                        "reused": True}
-        raise http_error(
-            "persistence_unavailable",
-            safe_detail("导出作业创建失败", exc)) from exc
-    _push_export_wake()
-    _audit("export_job_created", request=request, actor_user_id=owner or None,
-           target_type="run", target_id=run_id,
-           detail={"export_id": job_id, "kind": "pdf"})
-    return {"export_id": job["job_id"], "status": job["status"], "reused": False}
-
-
-@app.get("/api/research/{run_id}/export-jobs/{export_id}")
-def get_export_job(run_id: str, export_id: str, request: Request) -> dict:
-    """查询 PDF 导出作业状态（所有权 + 输出 gate 同口径）。"""
-    _authorize_run(request, run_id)
-    _enforce_output_policy(run_id)
-    job = _export_job_or_404(run_id, export_id)
-    expires = job.get("result_expires_at")
-    return {
-        "export_id": job["job_id"],
-        "status": job["status"],
-        "error_code": job.get("error_code"),
-        "result_bytes": job.get("result_bytes"),
-        "result_expires_at": expires.isoformat(timespec="seconds") if expires else None,
-    }
-
-
-@app.get("/api/research/{run_id}/export-jobs/{export_id}/download")
-def download_export_job(run_id: str, export_id: str, request: Request) -> Response:
-    """下载 PDF 导出结果（**每次**复核所有权 + 输出 gate + 结果有效期）。
-
-    结果过期/丢失 ⇒ `export_result_expired`（结构化错误；用户可重新申请再生成）；
-    不退回 API 同步渲染。`Cache-Control: private, no-store`。
-    """
-    _authorize_run(request, run_id)
-    _enforce_output_policy(run_id)
-    job = _export_job_or_404(run_id, export_id)
-    if job.get("status") != "SUCCEEDED":
-        raise http_error("export_not_ready", "导出尚未完成",
-                         detail=f"status={job.get('status')}")
-    expires = job.get("result_expires_at")
-    if expires is None or expires <= datetime.now(UTC):
-        raise http_error("export_result_expired", "导出结果已过期，请重新申请")
-    client = _export_result_store()
-    if client is not None:
-        try:
-            pdf = client.get(_EXPORT_RESULT_KEY_PREFIX + export_id)
-        except Exception as exc:  # noqa: BLE001
-            raise http_error(
-                "export_unavailable", f"结果通道读取失败：{type(exc).__name__}") from exc
-    else:
-        # DR_DEMO / 内存替身：结果随作业对象保存；真实模式未配通道 ⇒ 结构化不可用
-        get_result = getattr(_export_store(), "get_result", None)
-        if get_result is None:
-            raise http_error("export_unavailable", "结果通道未配置（DR_EXPORT_REDIS_URL）")
-        pdf = get_result(export_id)
-    if not pdf:
-        raise http_error("export_result_expired", "导出结果已过期或丢失，请重新申请")
-    topic = None
-    if store is not None:
-        row = _store_call(store.get_run, run_id) or {}
-        topic = row.get("topic")
-    if not topic:
-        try:  # 内存 / DR_DEMO：话题名从 manager 载荷取；取不到回退 run_id 文件名
-            topic = (manager.export_payload(run_id) or {}).get("topic")
-        except Exception:  # noqa: BLE001 —— 文件名回退不影响下载本体
-            topic = None
-    display, ascii_fallback = build_export_filename(topic, run_id, ".pdf")
-    return Response(
-        content=pdf,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": content_disposition(display, ascii_fallback),
-            "Cache-Control": "private, no-store",
-        },
-    )
 
 
 # ------------------------------------------------------------------ 报告只读分享（需求 26）
