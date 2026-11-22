@@ -43,6 +43,7 @@ from research_engine.usage import pop_usage_sink, push_usage_sink
 from . import docx_render as docx_render_mod
 from . import export as export_mod
 from . import followup as followup_mod
+from . import mfa as mfa_service
 from . import passkeys, secretbox
 from .agui import (
     FOLLOWUP_ANSWERED,
@@ -93,6 +94,7 @@ from .hitl import (
 from .injection_guard import scan_injection
 from .mailer import get_mailer, new_login_email, password_reset_email
 from .metrics import METRICS
+from .mfa import MFA_ISSUER, TOTP_OK, TOTP_REPLAY
 from .moderation import (
     MAX_APPEAL_LENGTH,
     MAX_INSTRUCTIONS_LENGTH,
@@ -129,7 +131,6 @@ from .totp import (
     hash_recovery_code,
     new_recovery_codes,
     new_totp_secret,
-    verify_totp_step,
 )
 from .totp import (
     provisioning_uri as totp_provisioning_uri,
@@ -1222,16 +1223,31 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=200)
 
 
+def _rotate_session_after_step_up(user: dict, request: Request, response: Response) -> None:
+    """需求 42：step-up 成功后轮换会话（实现见 web/backend/mfa.py）。"""
+    mfa_service.rotate_session_after_step_up(
+        store=store, store_call=_store_call, set_session_cookies=_set_session_cookies,
+        user=user, request=request, response=response)
+
+
+def _require_mfa_ready() -> None:
+    """MFA 端点前置：服务端密钥未配置即 503（实现见 web/backend/mfa.py）。"""
+    mfa_service.require_mfa_ready()
+
+
+def _verify_totp_factor(factor: dict, code: str) -> str:
+    """校验 TOTP 并原子消费时间步（实现见 web/backend/mfa.py）。"""
+    return mfa_service.verify_totp_factor(
+        store=store, store_call=_store_call, factor=factor, code=code)
+
+
+def _verify_mfa_factor(user_id: str, factor: dict, code: str) -> str:
+    """TOTP 优先、恢复码兜底（实现见 web/backend/mfa.py）。"""
+    return mfa_service.verify_mfa_factor(
+        store=store, store_call=_store_call, user_id=user_id, factor=factor, code=code)
+
+
 # ------------------------------------------------------------------ MFA：TOTP + 恢复码（需求 20 P1-3）
-
-#: 认证器 App 中显示的签发方
-MFA_ISSUER = "爱考据 iKaoju"
-
-#: TOTP 校验结果（需求 42：防重放需区分「码不对」与「码已被用过」）
-TOTP_OK = "ok"
-TOTP_INVALID = "invalid"
-TOTP_REPLAY = "replay"
-
 
 class MfaBeginRequest(BaseModel):
     """P0-2c：开始绑定 TOTP 前必须重新输入当前密码（防被劫持会话绑定攻击者因子）。"""
@@ -1248,57 +1264,8 @@ class MfaDisableRequest(BaseModel):
     code: str = Field("", max_length=32)
 
 
-def _rotate_session_after_step_up(user: dict, request: Request, response: Response) -> None:
-    """需求 42：第二步验证成功后轮换会话 token（吊销旧半程会话并重签 Cookie）。
-
-    登录本身已轮换 token；step-up 沿用同一纪律，避免预置的半程会话在验证后继续有效。
-    """
-    _store_call(store.revoke_session, user["session_token_hash"])
-    _set_session_cookies(response, user["user_id"], request)
-
-
-def _require_mfa_ready() -> None:
-    """MFA 端点前置：服务端密钥未配置即 503（fail-closed，不静默降级）。"""
-    if not secretbox.configured():
-        raise http_error("mfa_unconfigured", "MFA 未启用（服务端缺少 DR_MFA_SECRET_KEY）")
-
-
 def _iso(value) -> Optional[str]:
     return value.isoformat() if value is not None else None
-
-
-def _verify_totp_factor(factor: dict, code: str) -> str:
-    """校验 TOTP 并**原子消费**时间步；返回 `TOTP_OK` / `TOTP_INVALID` / `TOTP_REPLAY`。
-
-    密钥不可用 / 密文损坏一律 `TOTP_INVALID`（fail-closed）；命中但该时间步已被
-    消费 ⇒ `TOTP_REPLAY`（RFC 6238 §5.2：同一 OTP 不得二次使用，需求 42）。
-    """
-    try:
-        secret = secretbox.decrypt(factor["secret_encrypted"])
-    except Exception:  # noqa: BLE001
-        return TOTP_INVALID
-    step = verify_totp_step(secret, code, time.time())
-    if step is None:
-        return TOTP_INVALID
-    if not _store_call(store.consume_mfa_factor_step, factor["factor_id"], step):
-        return TOTP_REPLAY
-    return TOTP_OK
-
-
-def _verify_mfa_factor(user_id: str, factor: dict, code: str) -> str:
-    """TOTP 优先；否则尝试**恢复码**（单次消费成功才算通过）。返回 TOTP 结果常量。
-
-    恢复码不依赖服务端密钥 ⇒ **认证器丢失**时仍可关闭 MFA（防用户自锁）。
-    （注意：若服务端密钥丢失，登录会在第一步即 fail-closed，恢复码无法用于登录——
-    须由运维恢复 `DR_MFA_SECRET_KEY`。）
-    """
-    status = _verify_totp_factor(factor, code)
-    if status in (TOTP_OK, TOTP_REPLAY):
-        # 重放不再回落恢复码：该码已被 TOTP 匹配过，回落只会扩大暴力面
-        return status
-    if _store_call(store.consume_recovery_code, user_id, hash_recovery_code(code)):
-        return TOTP_OK
-    return TOTP_INVALID
 
 
 @app.get("/api/auth/mfa")
