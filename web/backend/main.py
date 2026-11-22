@@ -62,6 +62,7 @@ from .api.rag_ingest import build_rag_ingest_router
 from .api.rag_read import build_rag_read_router
 from .api.rag_write import build_rag_write_router
 from .api.runs_manage import StartResponse, build_runs_manage_router
+from .api.share_manage import build_share_manage_router
 from .api.webauthn import build_webauthn_manage_router
 from .appeals import submit_appeal
 from .auth import (
@@ -913,6 +914,21 @@ app.include_router(build_rag_ingest_router(
     upload_limiter=lambda: RAG_UPLOAD_LIMITER,
     max_upload_mb=lambda: RAG_MAX_UPLOAD_MB,
     stream_to_temp_fn=lambda *args, **kwargs: stream_to_temp(*args, **kwargs),
+))
+
+
+# 2026-11 后端按域拆分（第十六刀）：分享管理路由 create/get/revoke。
+app.include_router(build_share_manage_router(
+    get_store=lambda: store,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    authorize_run=lambda req, rid: _authorize_run(req, rid),
+    check_csrf=lambda req: _check_csrf(req),
+    audit=lambda action, **kwargs: _audit(action, **kwargs),
+    enforce_output_policy=lambda rid: _enforce_output_policy(rid),
+    share_enabled_or_404=lambda: _share_enabled_or_404(),
+    share_markdown=lambda rid: _share_markdown(rid),
+    share_state=lambda row: _share_state(row),
+    utcnow=lambda: datetime.now(UTC),
 ))
 
 
@@ -2214,12 +2230,6 @@ def download_export_job(run_id: str, export_id: str, request: Request) -> Respon
 # ------------------------------------------------------------------ 报告只读分享（需求 26）
 
 
-class ShareCreateRequest(BaseModel):
-    """expires_days：1/7/30 天；0 = 永不过期（显式选择，前端二次确认）。"""
-
-    expires_days: int = Field(7, ge=0, le=30)
-
-
 def _share_enabled_or_404() -> None:
     if not SHARE_ENABLED:
         raise http_error("share_not_found", "链接无效或已过期")
@@ -2255,58 +2265,6 @@ def _share_state(row: dict) -> dict:
                              if row.get("last_accessed_at") else None),
         "access_count": row.get("access_count", 0),
     }
-
-
-@app.post("/api/runs/{run_id}/share")
-def create_run_share(run_id: str, req: ShareCreateRequest, request: Request) -> dict:
-    """创建/重建报告只读分享：一 run 单活跃链接（重建即撤销旧的）；token 明文只回一次。"""
-    _share_enabled_or_404()
-    owner = _authorize_run(request, run_id) or ""
-    _check_csrf(request)
-    _enforce_output_policy(run_id)
-    if store is None:
-        raise http_error("persistence_unavailable", "分享需要任务库（DR_DATABASE_URL）")
-    if _share_markdown(run_id) is None:
-        raise http_error("report_unavailable", "本次运行没有产出报告")
-    token = new_token()
-    share_id = uuid.uuid4().hex[:12]
-    expires_at = (None if req.expires_days == 0
-                  else datetime.now(UTC) + timedelta(days=req.expires_days))
-    _store_call(store.create_report_share, share_id, token_hash(token), run_id,
-                owner, expires_at)
-    _audit("share_created", request=request, actor_user_id=owner or None,
-           target_id=share_id, detail={"run_id": run_id, "expires_days": req.expires_days})
-    return {"ok": True, "share_id": share_id, "url": f"/s/{token}",
-            "permanent": expires_at is None,
-            "expires_at": expires_at.isoformat() if expires_at else None}
-
-
-@app.get("/api/runs/{run_id}/share")
-def get_run_share(run_id: str, request: Request) -> dict:
-    """当前活跃分享状态（不含 token —— 明文不可恢复；重建即轮换）。"""
-    _share_enabled_or_404()
-    _authorize_run(request, run_id)
-    if store is None:
-        raise http_error("persistence_unavailable", "分享需要任务库（DR_DATABASE_URL）")
-    row = _store_call(store.get_active_report_share, run_id)
-    if row is None:
-        return {"active": False}
-    return {"active": True, **_share_state(row)}
-
-
-@app.delete("/api/runs/{run_id}/share")
-def revoke_run_share(run_id: str, request: Request) -> dict:
-    """撤销该 run 的活跃分享（立即失效）。"""
-    _share_enabled_or_404()
-    owner = _authorize_run(request, run_id)
-    _check_csrf(request)
-    if store is None:
-        raise http_error("persistence_unavailable", "分享需要任务库（DR_DATABASE_URL）")
-    revoked = _store_call(store.revoke_report_share, run_id)
-    if revoked:
-        _audit("share_revoked", request=request, actor_user_id=owner,
-               target_id=run_id)
-    return {"ok": True, "revoked": revoked}
 
 
 @app.get("/api/shares")
