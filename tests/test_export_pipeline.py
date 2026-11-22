@@ -17,6 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from web.backend import main as api
+from web.backend.api import export_report as export_report_mod
 from web.backend.export import (
     EXPORT_DOCUMENT_SCHEMA_VERSION,
     build_export_payload,
@@ -167,7 +168,7 @@ def test_export_from_store_matches_memory_rendering(monkeypatch):
     monkeypatch.setattr(api, "store", fake)
     monkeypatch.setattr(api.manager, "exists", lambda rid: False)
 
-    resp = api._export_from_store(RID, "md", fake.row)
+    resp = export_report_mod.export_from_store(RID, "md", fake.row, artifact_text=api._artifact_text)
     memory_md = render_markdown(document_from_payload(payload))
     assert resp.body.decode() == memory_md
     assert "## 引用清单" in resp.body.decode()  # 历史路径从「缺」变「有」（F1 修复）
@@ -179,17 +180,17 @@ def test_export_from_store_json_and_guards(monkeypatch):
     monkeypatch.setattr(api, "store", fake)
     monkeypatch.setattr(api.manager, "exists", lambda rid: False)
 
-    resp = api._export_from_store(RID, "json", fake.row)
+    resp = export_report_mod.export_from_store(RID, "json", fake.row, artifact_text=api._artifact_text)
     assert json.loads(resp.body)["run_id"] == RID
 
     with pytest.raises(Exception) as e:  # 未完成 ⇒ report_not_ready
-        api._export_from_store(RID, "md", _row(finished_at=None))
+        export_report_mod.export_from_store(RID, "md", _row(finished_at=None), artifact_text=api._artifact_text)
     assert "report_not_ready" in str(getattr(e.value, "detail", e.value))
 
     fake_empty = _FakeStore(_row(), {})
     monkeypatch.setattr(api, "store", fake_empty)
     with pytest.raises(Exception) as e2:  # 无产物 ⇒ report_unavailable
-        api._export_from_store(RID, "md", fake_empty.row)
+        export_report_mod.export_from_store(RID, "md", fake_empty.row, artifact_text=api._artifact_text)
     assert "report_unavailable" in str(getattr(e2.value, "detail", e2.value))
 
 

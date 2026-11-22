@@ -7,6 +7,7 @@
 
 ### Changed
 
+- **后端按域拆分第十八刀（export 同步导出）**：`GET /api/research/{run_id}/report`（md/json/docx）与同步导出装配迁入 `web/backend/api/export_report.py`（118 行），`main.py` 2505→2427 行；内存/任务库双路径同口径、输出 gate、RFC 6266 文件名以注入方式保持；`export_from_store` 以模块级函数导出供既有白盒测试使用，导出/分享测试全绿。
 - **后端按域拆分第十七刀（share 域收官）**：`GET /api/shares`、`GET /api/share/{token}`、`GET /s/{token}` 迁入 `web/backend/api/share_public.py`（110 行），`main.py` 2566→2505 行；免登录只读读取的统一 404/限流/noindex/缓存头与 SPA 壳行为不变，share API 测试全绿。分享域全部路由收官。
 - **后端按域拆分第十六刀（share 管理）**：`POST/GET/DELETE /api/runs/{run_id}/share` 与 `ShareCreateRequest` 迁入 `web/backend/api/share_manage.py`（94 行），`main.py` 2608→2566 行；分享闸/只读正文链/状态序列化暂由 main 注入（公开读取随下一刀迁移），行为不变，分享 API 测试全绿。
 - **后端按域拆分第十五刀（rag 上传域收官）**：`POST /api/rag/ingest`（流式落盘 + 三重校验 + 异步登记/本地同步摄取）迁入 `web/backend/api/rag_ingest.py`（160 行），`main.py` 2718→2608 行；隔离区路径/限流/鉴权注入，`stream_to_temp` 以可注入 callable 保留测试 monkeypatch 语义；rag 上传/孤儿清理/失败关闭测试全绿。rag 域全部路由收官。
