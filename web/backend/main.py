@@ -59,7 +59,7 @@ from .api.health import build_health_router
 from .api.meta import router as meta_router
 from .api.mfa import build_mfa_router
 from .api.ops import build_ops_router
-from .api.runs_manage import build_runs_manage_router
+from .api.runs_manage import StartResponse, build_runs_manage_router
 from .api.webauthn import build_webauthn_manage_router
 from .appeals import submit_appeal
 from .auth import (
@@ -569,10 +569,6 @@ class StartRequest(BaseModel):
         None, max_length=128, description="创建幂等键：重复提交返回既有 run_id，不重复执行")
 
 
-class StartResponse(BaseModel):
-    run_id: str
-
-
 #: 搜索源展示名 —— 新增 provider 时在此登记即可被前端 /api/options 列出
 def _queue_depth() -> Optional[int]:
     """队列深度：以任务库 QUEUED 计数为准（P0-2）；无库时回落 Redis（仅唤醒信号）。"""
@@ -864,6 +860,16 @@ app.include_router(build_runs_manage_router(
     audit=lambda action, **kwargs: _audit(action, **kwargs),
     run_brief=lambda row: _run_brief(row),
     open_statuses=lambda: OPEN_STATUSES,
+    client_key=lambda req: _client_key(req),
+    submit_limiter=lambda: SUBMIT_LIMITER,
+    check_input_safety=lambda **kwargs: _check_input_safety(**kwargs),
+    start_queued=lambda **kwargs: _start_queued(**kwargs),
+    manager_start=lambda *args, **kwargs: manager.start(*args, **kwargs),
+    effective_run_budget=lambda profile: _effective_run_budget(profile),
+    admission_limits=lambda budget: _admission_limits(budget),
+    request_fingerprint=lambda topic, instructions, name: _request_fingerprint(topic, instructions, name),
+    idempotent_existing=lambda user_id, key, fingerprint: _idempotent_existing(user_id, key, fingerprint),
+    execution_mode=lambda: EXECUTION_MODE,
 ))
 
 
@@ -1581,71 +1587,6 @@ def run_status(run_id: str, request: Request) -> dict:
     if snap is None:
         raise http_error("run_id_not_found", f"run_id 不存在：{run_id}")
     return snap
-
-
-#: 需求 22：可重试的终态（失败 / 失联 / 超时）；成功与取消不重试
-RETRYABLE_STATUSES = ("FAILED", "LOST", "TIMED_OUT")
-
-
-@app.post("/api/runs/{run_id}/retry", response_model=StartResponse)
-def retry_run(run_id: str, request: Request) -> StartResponse:
-    """需求 22：失败任务一键重试 —— 复制原 request 快照创建**新 run**（`retry_of` 血缘）。
-
-    幂等键固定 `retry-{原 run_id}`：重复点击返回同一个新 run；配额 / 预算照常走准入事务。
-    仅终态失败（FAILED / LOST / TIMED_OUT）可重试；其余 409。
-    """
-    if store is None:
-        raise http_error("persistence_unavailable", "未配置任务库（DR_DATABASE_URL）")
-    owner = _authorize_run(request, run_id)
-    _check_csrf(request)
-    if not SUBMIT_LIMITER.allow(f"submit:{owner or _client_key(request)}"):
-        raise http_error("rate_limited", "提交过于频繁，稍后再试")
-    row = _store_call(store.get_run, run_id)
-    if row is None:
-        raise http_error("run_id_not_found", f"run_id 不存在：{run_id}")
-    if row["status"] not in RETRYABLE_STATUSES:
-        raise http_error(
-            "run_not_retryable",
-            "仅失败 / 失联 / 超时的任务可重试",
-            detail=f"status={row['status']}",
-        )
-    payload = row.get("request") or {}
-    profile_name = (payload.get("profile") or {}).get("name") or DEFAULT_PROFILE
-    profile = resolve_profile(profile_name) or resolve_profile(DEFAULT_PROFILE)
-    topic = row["topic"]
-    instructions = payload.get("instructions") or ""
-    idempotency_key = f"retry-{run_id}"
-    ignored = payload.get("ignored_overrides") or {}
-    fingerprint = _request_fingerprint(topic, instructions, profile.name)
-    # 2026-11 PR 审阅修复：幂等命中**先于**输入安全闸（与主创建路径同序）。
-    # 否则首次重试成功后再点一次，只要审核 provider 降级/词表变化就会返回 4xx，
-    # 违背「重复点击返回同一个新 run」的重试幂等承诺。
-    existing = _idempotent_existing(owner, idempotency_key, fingerprint)
-    if existing is not None:
-        return StartResponse(run_id=existing["run_id"])
-    try:
-        # 2026-11 修复：重试也必须过输入安全闸（此前直接进 _start_queued，绕过审核/注入预检）；
-        # 已拦截过的输入重试时同样被拦，审核 provider 降级时同样 fail-closed。
-        _check_input_safety(topic=topic, instructions=instructions,
-                            user_id=owner, request=request)
-        if EXECUTION_MODE == "queue":
-            new_run_id = _start_queued(
-                topic=topic, instructions=instructions, idempotency_key=idempotency_key,
-                user_id=owner, profile=profile, ignored=ignored, fingerprint=fingerprint,
-                retry_of=run_id)
-        else:
-            new_run_id = manager.start(
-                topic, instructions, profile,
-                idempotency_key, user_id=owner,
-                budget_limit_cny=_effective_run_budget(profile),
-                ignored_overrides=ignored,
-                admission=_admission_limits(_effective_run_budget(profile)),
-                request_hash=fingerprint, retry_of=run_id)
-    except ApiError as exc:
-        raise exc.to_http() from exc
-    _audit("run_retried", request=request, actor_user_id=owner, target_type="run",
-           target_id=run_id, detail={"new_run_id": new_run_id})
-    return StartResponse(run_id=new_run_id)
 
 
 @app.get("/api/quota")
