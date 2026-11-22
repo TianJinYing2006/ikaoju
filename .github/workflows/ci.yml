@@ -97,6 +97,14 @@ jobs:
           mypy --ignore-missing-imports --follow-imports=silent
           research_engine/runtime research_engine/search/replay.py web/backend/api
 
+      # 2026-11（依赖安全）：runtime lock 的 CVE 门禁。
+      # 升级 mcp 1.9.4 → 1.30.0 修复 11 项 advisory 后实测 0 漏洞；pip-audit 钉版本安装
+      # （不入 dev lock，避免为扫描器再增一枚可被投毒的开发依赖）。
+      - name: Dependency audit (pip-audit, runtime lock)
+        run: |
+          python -m pip install "pip-audit==2.10.1"
+          pip-audit -r requirements-lock.txt --timeout 60 --progress-spinner off
+
       # 需求 38 F2：weasyprint 运行依赖（PDF 渲染测试真跑；字体含 CJK，保证中文可提取）
       # 2026-10-26：apt 慢源主要是 fonts-noto-cjk（61MB）。字体复用 e2e 的 deb 缓存；
       # pango 两库很小，保留 apt（先直装，失败再 update+重试）。step 超时 12 分钟兜底。

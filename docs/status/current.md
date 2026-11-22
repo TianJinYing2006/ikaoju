@@ -38,12 +38,12 @@
 | 研究质量 | coverage ≈40%、uncited_fact_ratio ≈69%、信息不足标记 ≈74~79% —— 未达可宣称水平 |
 | 引擎彻底去隐式依赖（类级 LLM 计数 / contextvar） | 部分：RAG 作用域与运行档位已显式注入（`rag_scope`/`profile`）；**类级 LLM 计数器已删除**（走 run 级 TokenLedger）；剩余：文档摄取 / MCP server 的 usage sink 仍走兼容 contextvar |
 | 后端完整拆分（app factory + routers + services + repositories） | 仅完成 `api/meta.py` 样板 |
-| pip-audit 与 npm devDeps 审计 | 未做（pip-audit 的 PyPI advisory 请求本机超时，无法本地验证；mypy 增量门禁已接入） |
+| 依赖安全审计 | pip-audit 进 CI（runtime lock 实测 **0 漏洞**，mcp 1.9.4→1.30.0 修复 11 项 advisory）；npm 生产依赖审计在前端 job（0 漏洞） |
 | 生产就绪 | 审核默认本地空词表、无邮箱验证/CAPTCHA、沙箱非恶意代码隔离 —— **不宣称生产级** |
 
 ## 4. 下一步优先级
 
 1. 评测 v2 实跑并冻结新基线（质量说服力的唯一来源）；
 2. 引擎隐式依赖收敛 + 后端按域拆分（每 PR 带契约测试）；
-3. pip-audit（需网络稳定后验证）与 npm devDeps 审计；
+3. npm devDependencies 的存量漏洞升级（生产依赖 0 漏洞，dev 项不阻塞 CI、单独议题）；
 4. 截图/90s demo（v0.3.0 已于 2026-11-22 发布）。

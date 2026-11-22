@@ -5,6 +5,12 @@
 
 ## [Unreleased]
 
+### Security
+
+- **依赖安全：`mcp` 1.9.4 → 1.30.0**，修复 11 项 advisory（PYSEC-2026-1617/1618/3482/3483、CVE-2026-59951/116685/115563）；runtime lock 增补 `jsonschema` / `pyjwt` / `attrs` / `referencing` / `rpds-py` / `jsonschema-specifications`，`pip-audit -r requirements-lock.txt` 实测 **0 漏洞**。
+- **CI 新增 pip-audit 门禁**（runtime lock；pip-audit 2.10.1 钉版本按需安装，不入 dev lock）；npm 生产依赖审计沿用前端 job 既有门禁（实测 0 漏洞）。
+- **MCP Server 适配 SDK 1.30**：SDK 新增的 DNS rebinding 防护显式关闭（服务部署在 Caddy 后、对外域名随环境变化；边界仍由 Bearer 令牌 + 网络策略承担，与 1.9 行为等价），测试适配新 mount 路径。本地 Windows 以 PYTHONPATH 方式运行时需把 `.deps/win32`、`.deps/win32/lib` 加入 PYTHONPATH（pywin32 的 `.pth` 不被 PYTHONPATH 处理）。
+
 ### Changed
 
 - **后端按域拆分第十九刀（export 域收官）**：`POST/GET /api/research/{run_id}/export-jobs[/{id}]` 与下载、`ExportJobRequest`、结果通道/唤醒 helper 迁入 `web/backend/api/export_jobs.py`（197 行），`main.py` 2427→2284 行；输入预检、request_hash 幂等复用、输出 gate、结果 TTL/通道未配置语义不变；结果通道客户端以同名 shim 注入保留测试 monkeypatch，导出/PDF/演示测试全绿。export 域全部路由收官。
