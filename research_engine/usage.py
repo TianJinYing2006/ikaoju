@@ -1,11 +1,12 @@
 """逐调用 usage 记账的运行时 sink（P1-4 / P0-8）。
 
-核心链路（LLMClient / embedding / 搜索）只负责 `emit_usage`；**落库由 web 层注入**
-（contextvar sink），保持 `research_engine` 不依赖任务库：
+核心链路（LLMClient / embedding / 搜索）只负责 `emit_usage`；**落库由 web 层注入**。
+2026-11 起：研究主链路按 `run_id` 走**显式注册表 sink**（`register_usage_sink`），
+contextvar sink 仅作文档摄取 / MCP server 等非研究 run 的兼容兜底：
 
-- CLI / eval 不设置 sink ⇒ emit 为 no-op，行为与历史一致；
-- RunManager / Worker / 摄取执行器在每次 run（或每个文档）前 `push_usage_sink(...)`，
-  结束 `pop_usage_sink(token)`；线程/协程隔离由 contextvars 保证；
+- CLI / eval 不注册 sink ⇒ emit 为 no-op，行为与历史一致；
+- RunManager / Worker 在每次 run 前 `register_usage_sink(run_id, ...)`、结束注销；
+  同时保留 `push_usage_sink` 兼容路径（尚未携带 run_id 的 emit 点）；
 - **P0-8：sink 异常不再静默**——记 ERROR 日志并累加 `sink_failure_count()`；
   `DR_USAGE_STRICT=true` 时上抛 `UsageSinkError`（预算/计费场景可将任务标记为
   accounting_degraded 或中止）。web 层 sink 还会写审计与 Prometheus 计数（见

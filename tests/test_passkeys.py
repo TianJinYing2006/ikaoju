@@ -186,6 +186,10 @@ def test_unconfigured_passkeys_fail_closed(monkeypatch, client: TestClient):
     begun = _begin_registration(client)
     assert begun.status_code == 503
     assert begun.json()["detail"]["code"] == "webauthn_unavailable"
+    # 2026-11 PR 审阅修复：登录 begin 也必须 fail-closed（旧实现漏守卫）
+    login_begin = client.post("/api/auth/webauthn/authenticate/begin", json={})
+    assert login_begin.status_code == 503
+    assert login_begin.json()["detail"]["code"] == "webauthn_unavailable"
 
 
 def test_unknown_email_begin_does_not_leak_account(monkeypatch, client: TestClient):

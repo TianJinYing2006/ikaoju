@@ -97,21 +97,15 @@ cd web/frontend && npm ci && npm run e2e
 ## 评测：先说"不能说什么"
 
 评测集是 **20 道中文自建题**（AI 草稿 + 人工校准），不是公开 benchmark；结论不外推到其它语言/模型。
-**同一指标在不同口径/裁判下不可直接比较**，因此这里只登记，不挑选：
+**同一指标在不同口径/裁判/断点下不可直接比较**：
 
-| 口径 | 数值 | 说明 |
-| --- | --- | --- |
-| W8 after 基线（2026-09-19） | coverage **39.8%**、citation_accuracy **78.3%** | 裁判与主链路同族、**非独立** |
-| 独立裁判复核（2026-10-07，ok 子集） | citation fidelity **85.4% ± 1.8pp** | 主链路 fidelity 52.2%；6/20 题裁判超时，指标缺失导致配对偏差 |
-| 单次自动快照（2026-10-07） | 严格口径 **43.3% ± 8.3pp** | `verdict=suspicious`；同期 uncited_fact_ratio ≈ 0.69 |
-
-- **四指标配对统计均未达判定门槛 ⇒ 本仓库不宣称任何"质量提升/下降"**。判定过程：
-  [`docs/eval-w8-after-baseline.md`](docs/eval-w8-after-baseline.md)、
+- 各口径的数值、采集命令、日期与断点**只登记在** [`docs/figures.md`](docs/figures.md) §4（本 README 不复述数字，避免第二份会漂移的副本）；
+- 判定过程见 [`docs/eval-w8-after-baseline.md`](docs/eval-w8-after-baseline.md)、
   [`docs/eval-w9-baseline.md`](docs/eval-w9-baseline.md)、
-  [`docs/eval-w7-conclusion.md`](docs/eval-w7-conclusion.md)。
-- **约 69% 的事实句没有引用、74~79% 的报告小节被系统自己标为「信息不足」**：研究质量本身
-  仍未达到可对外宣称的水平。这是本项目最诚实的短板，也是后续迭代的主目标。
-- 数字的唯一来源是 [`docs/figures.md`](docs/figures.md)（由 `tools/gen_figures.py --check` 机器校验结构事实）。
+  [`docs/eval-w7-conclusion.md`](docs/eval-w7-conclusion.md)；
+- **四指标配对统计均未达判定门槛 ⇒ 本仓库不宣称任何「质量提升/下降」**；
+- 无引用事实句比例、被系统自标「信息不足」的报告小节占比同样在 figures §4 ——
+  **研究质量仍是本项目最诚实的短板**，也是后续迭代的主目标。
 
 ## 架构与目录
 
@@ -121,7 +115,7 @@ web/backend/         # FastAPI：API、SSE、RunStore、Worker、鉴权、RAG、
 web/frontend/        # React + TS + Vite + Tailwind；E2E 在 web/frontend/e2e
 migrations/          # 31 个前向迁移 + 31 条 schema 结构断言（只前向、字节不可变）
 tools/               # CI 守卫、figures 生成、备份/恢复/迁移脚本
-docs/                # 需求 45 篇、ADR 19 篇、评测结论、运维 runbook、legal
+docs/                # 需求 45 篇、ADR 20 篇、评测结论、运维 runbook、legal
 ```
 
 关键设计决策见 [`docs/decisions/README.md`](docs/decisions/README.md)；
@@ -131,7 +125,7 @@ docs/                # 需求 45 篇、ADR 19 篇、评测结论、运维 runboo
 
 | 指标 | 当前值 | 采集口径 / 日期 |
 | --- | --- | --- |
-| 单元测试 | **1570 项**（2026-11-22 本机 Python 3.13 + 锁定依赖：1490 通过 / 81 跳过 / 0 失败） | `pytest --collect-only`；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 |
+| 单元测试 | **1575 项**（2026-11-22 本机 Python 3.13 + 锁定依赖：1495 通过 / 80 跳过；另有 1 个模块级 collection-skip，pytest 汇总显示 81 skipped） | `pytest --collect-only`；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 |
 | 浏览器 E2E | **89 个用例 / 21 个 spec** | `npx playwright test --list`；desktop + mobile 双 project，`DR_DEMO=1` |
 
 - **CI**：ruff + Python 3.11/3.12/3.13 矩阵（3.13 档带 **coverage 门禁 ≥73%**）+

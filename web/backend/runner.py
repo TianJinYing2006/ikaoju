@@ -605,7 +605,7 @@ class RunManager:
         if self._store is not None:
             # P1-4：本线程的逐调用用量落进 usage_ledger（无 store 时为 no-op）
             usage_sink = make_store_sink(self._store, run_id=run_id, attempt=1)
-            usage_token = push_usage_sink(usage_sink)  # 旧路径兜底（搜索/RAG emit 尚无 run_id）
+            usage_token = push_usage_sink(usage_sink)  # 兼容兜底（文档摄取 / MCP 等非研究 run 的 emit）
             register_usage_sink(run_id, usage_sink)  # 2026-11：显式路径（LLM emit 带 run_id）
         try:
             from config import config
@@ -640,16 +640,16 @@ class RunManager:
                 rag_revision = 0
             rag_scope = RagScope(user_id=self.owner(run_id), revision=rag_revision)
             factory = self._graph_factory
+            # 2026-11 PR 审阅修复：**始终**设置线程级 scope —— 除 Researcher 构建期捕获外，
+            # 证据身份（research_engine/evidence.py 的 current_scope()）也在运行期读取它；
+            # 仅在 fallback 分支设置会让 owner run 的 RAG evidence_id scope 令牌恒空。
+            set_scope(user_id=rag_scope.user_id, revision=rag_scope.revision)
             graph_kwargs = {}
             if getattr(factory, "accepts_rag_scope", False):
                 graph_kwargs["rag_scope"] = rag_scope
             if getattr(factory, "accepts_profile", False):
                 graph_kwargs["profile"] = profile  # 2026-11：档位显式注入（不再只靠 set_profile）
-            if graph_kwargs:
-                graph = factory(**graph_kwargs)
-            else:
-                set_scope(user_id=rag_scope.user_id, revision=rag_scope.revision)
-                graph = factory()
+            graph = factory(**graph_kwargs) if graph_kwargs else factory()
             # 把跳数上限随 RUN_STARTED 下发 ⇒ 前端才能算**真实的**检索阶段进度
             # （depth / max_total_hops），而不是做一个只会动的假条。
             # 搜索源 / 学术检索同样下发 ⇒ 前端显示的是**实际生效**的配置，不是用户点的那个。

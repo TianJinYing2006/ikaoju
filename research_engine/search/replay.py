@@ -96,6 +96,17 @@ class ReplaySearchProvider(SearchProvider):
                 failure_reason=failure,
                 failure_detail=str(entry.get("failure_detail") or ""),
             )
+        raw_results = entry.get("results") or []
+        if not raw_results:
+            # 2026-11 PR 审阅修复：与活源语义对齐 —— 零结果一律 empty_result
+            # （bocha/tavily 实测零结果均归 empty_result），否则回放 run 的降级/失败
+            # 归因会与活源口径不一致，评测不可比。
+            return SearchResponse(
+                query=query,
+                results=[],
+                failure_reason=FailureReason.EMPTY_RESULT.value,
+                failure_detail="replay fixture 录制为空结果（按活源口径归一为 empty_result）",
+            )
         limit = max(0, int(max_results))
         results: List[SearchResult] = []
         for item in entry.get("results") or []:

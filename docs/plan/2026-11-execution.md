@@ -6,9 +6,9 @@
 
 ## 0. 一句话结论
 
-**阶段 0（止血）全部完成；阶段 1 的 figures 自动校验、独立裁判脚手架与确定性回放完成，评测 v2 实跑未完成；阶段 2 完成了 RunContext / 节点写回 / 评测并发隔离 / RAG 作用域显式化 / run 级 TokenLedger（引擎不再依赖类级 LLM 计数器），评测工具类级汇总与 runtime_profile/usage contextvar 未动；阶段 3 后端拆分完成第一刀（`api/meta.py` 薄路由层）与三处安全加固，完整拆分未做；阶段 4 完成仓库卫生、coverage 门禁、Windows 沙箱 job 与文档结构收敛，pip-audit/mypy 未加；阶段 5 完成 README 重写与本报告。** 计划中依赖外部条件（API key 跑评测、真实浏览器截图/录屏、GitHub runner 验证、生产部署权限）的项未完成，均如实登记在 §3。
+**阶段 0（止血）全部完成；阶段 1 的 figures 自动校验、独立裁判脚手架与确定性回放完成，评测 v2 实跑未完成；阶段 2 完成了 RunContext / 节点写回 / 评测并发隔离 / RAG 作用域显式化 / run 级 TokenLedger（引擎不再依赖类级 LLM 计数器），评测工具类级汇总已迁移、runtime_profile/usage 已显式化；阶段 3 后端拆分完成第一刀（`api/meta.py` 薄路由层）与三处安全加固，完整拆分未做；阶段 4 完成仓库卫生、coverage/mypy 门禁、Windows 沙箱 job 与文档结构收敛；pip-audit 巡检完成、CI 门禁未加；阶段 5 完成 README 重写与本报告。** 计划中依赖外部条件（API key 跑评测、真实浏览器截图/录屏、GitHub runner 验证、生产部署权限）的项未完成，均如实登记在 §3。
 
-全量测试：**1527 收集 / 1446 通过 / 81 跳过 / 0 失败**（Python 3.13 + `.deps`，2026-11-22 本机）。
+全量测试：**1575 收集 / 1495 通过 / 80 跳过**（pytest 汇总另计 1 个模块级 collection-skip）/ 0 失败（Python 3.13 + `.deps`，2026-11-22 本机）。
 6 个仓库守卫 + `tools/gen_figures.py --check` 全部通过。
 
 ## 1. 已完成项（按提交）
@@ -33,7 +33,8 @@
 | `（本轮）` | **contextvar 隐式依赖（RAG 作用域）显式化**：`create_graph(rag_scope=...)` / `Researcher(rag_scope=...)`；runner/worker 通过 `accepts_rag_scope` 能力标记显式注入，不再依赖「先 set_scope 再建图」的顺序；contextvar 仅作库函数/测试兜底 | `tests/test_rag_scope.py` 新增 3 例（显式优先于 contextvar、factory 透传、能力标记）；worker/loadtest 回归全绿 |
 | `（本轮）` | **类级 LLM 计数器（引擎运行期依赖）消除**：新增 `runtime/ledger.py`（run 级 `TokenLedger` + 进程级 run_id 注册表）；`create_graph/run/iter_run` 注入 `state.run_id` 并登记账本，LLM 记账按 run_id 写入；graph 输出 `last_ledger` 快照，`tokens_diff` 恒 None（旧字段仅兼容）；CLI 改打印 run 账本 | `tests/test_run_ledger.py` 7 例（累加/并发/注册表/按 run 隔离/无账本不崩）；HITL/Arm1/审计回归全绿 |
 | `（本轮）` | **ADR-0020**：记录「RAG 作用域显式注入 + run 级 TokenLedger」的背景/方案/取舍，含 msgpack checkpoint 教训；ADR 索引与 figures 计数同步 | `check_doc_consistency` ADR 索引 OK；figures「ADR 20 篇」 |
-| `（本轮）` | **检索链 run_id 穿透**：`Researcher._search_web/_search_rag/_search_arxiv/_search_mcp` 与 `HybridRetriever.embed_query/retrieve` 支持 `run_id`，`search_once` 从 `state.run_id` 绑定；对测试替身/旧签名用签名探测兼容 | `test_usage_ledger`（工具线程记账）/`test_rag_scope`/`test_rag_retriever_v2`/`test_arm4_failure_reasons` 全绿 |\n| `（本轮）` | **usage sink 显式注册表（去 contextvar 第一步）**：`usage.py` 新增 `register_usage_sink/unregister_usage_sink/usage_sink_for` + `emit_usage(record, run_id=...)` 显式优先；LLM 记账携带 `state.run_id`；runner/worker 注册/注销（contextvar 仅作搜索/RAG emit 的兼容兜底） | 新增 `tests/test_usage_sink_registry.py` 6 例（显式优先不双记、回退、失败计数/strict）；usage/worker 存量测试全绿 |
+| `（本轮）` | **检索链 run_id 穿透**：`Researcher._search_web/_search_rag/_search_arxiv/_search_mcp` 与 `HybridRetriever.embed_query/retrieve` 支持 `run_id`，`search_once` 从 `state.run_id` 绑定；对测试替身/旧签名用签名探测兼容 | `test_usage_ledger`（工具线程记账）/`test_rag_scope`/`test_rag_retriever_v2`/`test_arm4_failure_reasons` 全绿 |
+| `（本轮）` | **usage sink 显式注册表（去 contextvar 第一步）**：`usage.py` 新增 `register_usage_sink/unregister_usage_sink/usage_sink_for` + `emit_usage(record, run_id=...)` 显式优先；LLM 记账携带 `state.run_id`；runner/worker 注册/注销（contextvar 仅作搜索/RAG emit 的兼容兜底） | 新增 `tests/test_usage_sink_registry.py` 6 例（显式优先不双记、回退、失败计数/strict）；usage/worker 存量测试全绿 |
 | `（本轮）` | **依赖安全巡检（pip-audit 可用后）**：`pip-audit --path .deps` 报 3 组告警——`pypdf 6.16.2`、`urllib3 2.7.0` 在 lock 中已是修复版（6.21.4 / 2.8.0）；**`soupsieve 2.9.2` 为真实可修项**：lock 按 uv 解析改为 `2.10（py<3.11.5）/ 4.1.3（≥3.11.5）`，requirements 增补约束注释 | `pip-audit --path .deps` 输出留档；lock 语法按 uv 同格式手工对齐（CI 安装时验证） |
 | `（本轮）` | **运行档位（RuntimeProfile）显式注入**：`create_graph(..., profile=...)` + 能力标记 `accepts_profile`；`run()/iter_run()` 在 invoke/stream 期间用 `use_profile` 生效并在结束后恢复（不泄漏给同线程下一次 run）；runner/worker 能力探测后透传 profile | 新增 `tests/test_profile_injection.py` 4 例（含恢复 contextvar、worker factory 透传）；全量绿 |
 | `（本轮）` | **mypy 增量门禁接入 CI**：新增 step `mypy --ignore-missing-imports --follow-imports=silent research_engine/runtime research_engine/search/replay.py web/backend/api`；dev 依赖加 `mypy>=1.10` 并用 `uv pip compile` 重生成 lock（mypy 2.4.1） | 本机 `mypy ... → Success: no issues found in 6 source files`；CI YAML `yaml.safe_load` 通过 |
@@ -76,7 +77,7 @@
 3. **覆盖率/类型/依赖扫描**：coverage 门禁（73%）、Windows 安全 job、**mypy 增量门禁**（runtime/replay/api，本机 Success）已接入；**pip-audit 巡检已执行**（`.deps` 3 组告警：pypdf/urllib3 在 lock 已修复、soupsieve 已升 4.1.3），CI 门禁待稳定网络下的锁文件审计。npm devDeps 审计未做。
 4. **截图/录屏**：需要 `npm ci && npm run build` 后用 Playwright 截 4 个真实页面；本晚优先保证代码与测试，
    该产物留待有浏览器环境时补。
-5. **Windows 沙箱测试进 CI**：GitHub-hosted runner 有 windows-latest，但当前 workflow 未配置；
+5. **Windows 沙箱测试进 CI**：已配置 `security-windows` job（2026-11-22）；
    加入需新建 job 并验证 15 分钟内完成。
 
 ## 4. 下一步建议（按投入产出）
@@ -128,7 +129,7 @@ git checkout dev -- icon-lab ppt-report
 
 ```text
 py -3.13 -m pytest tests/ --tb=no
-→ 1490 passed, 81 skipped, 6 warnings
+→ 1495 passed, 80 skipped（另有 1 个模块级 collection-skip，pytest 汇总显示 81）
 
 py -3.13 -m mypy research_engine/runtime research_engine/search/replay.py web/backend/api --ignore-missing-imports --follow-imports=silent
 → Success: no issues found in 6 source files
@@ -137,7 +138,7 @@ py -3.13 tools/check_doc_consistency.py
 → 6 项 [OK]（figures tag / ICP / CI 守卫清单 / 开放注册口径 / ADR 索引 / README 数字 == figures）
 
 py -3.13 tools/gen_figures.py --check
-→ 结构事实全部 [OK]（ADR 20 / 需求 45 / 迁移 31+31 / 测试文件 162 / Python 文件数与行数以 figures 为准 / 守卫 6）
+→ 结构事实全部 [OK]（ADR 20 / 需求 45 / 迁移 31+31 / 测试文件 164 / Python 文件数与行数以 figures 为准 / 守卫 6）
 
 py -3.13 -m pytest tests/ --tb=no -q --cov=research_engine --cov=web --cov-fail-under=73
 → coverage 75.01%，Required test coverage of 73% reached
@@ -149,3 +150,24 @@ py -3.13 -m pip_audit --path .deps
 → 3 组告警（pypdf / urllib3 在 lock 已修复；soupsieve 已升级 4.1.3）
 ```
 ```
+
+## 8. 2026-11-22 PR 审查修复批次（12 个阻塞项闭环）
+
+> 触发：对 `plan/2026-11-refactor` 按 5 个 PR 批次做初审（见本文件 §6/§7 与审查报告），修复全部阻塞项后进入复审。
+
+| # | 阻塞项 | 修复 | 回归证据 |
+|---|--------|------|----------|
+| 1 | P1：validator 空报告 coverage 变更未登记口径断点 | `SCORER_VERSION` w9.1→**w9.2** + figures 断点 4 | `test_arm6_provenance`/figures 守卫 |
+| 2 | P2：未注入档位时 `use_profile(None)` 覆盖调用方 set_profile | `_UNSET` 哨兵 + `_profile_scope()`（未传不动 contextvar） | `test_legacy_set_profile_is_not_reset_when_not_injected` |
+| 3 | P2：显式注入后不再 set_scope，证据身份 scope 令牌恒空 | runner/worker **始终** set_scope（显式注入同时保留） | 既有 scope/evidence 测试 + 全量 |
+| 4 | P2/P3：Phase1 只收 ok 账本，failed/timeout 成本静默低估 | 失败 raw 也落 `token_ledger`；超时标 `cost_degraded` 并透传到 cost block | `test_eval_cost_degraded` |
+| 5 | P3：独立裁判可由配置置 true（headline 仍读主链路） | `citation_judge_is_independent()` 恒 False；配置仅记录 | `test_configured_judge_does_not_claim_independence` |
+| 6 | P3：replay 的 config_snapshot 缺 replay_dir/fixture 指纹 | 快照补 `search_replay_dir`/`search_enable_arxiv`/`replay_fixture_sha256` | `test_provenance_records_replay_dir_and_fixture_hash` |
+| 7 | P3：replay 空 results 返回 ok，与活源 empty_result 不一致 | 归一为 `empty_result` | `test_replay_empty_results_is_empty_result_like_live_provider` |
+| 8 | P4：`webauthn/authenticate/begin` 缺 fail-closed 守卫 | 补 `_require_webauthn_ready()` | `test_unconfigured_passkeys_fail_closed` 覆盖登录 begin |
+| 9 | P4：重试输入闸先于幂等，审核降级会改写「同一 run」承诺 | 幂等命中先于 `_check_input_safety` | `test_retry_idempotency_precedes_input_gate` |
+| 10 | P5：README ADR 计数 19≠20 | 改 20（figures 一致） | `check_doc_consistency` |
+| 11 | P5：README 自维护评测数字（违反而数字唯一来源） | README 只引用 figures §4，数字集中在 figures | `check_doc_consistency` + 人工核对 |
+| 12 | P5：测试计数/状态页/执行报告多处口径不一致 | 统一 1575 收集 / 1495 通过 / 80 跳过（另 1 模块级 skip 显式说明）；status/current、execution §0/§3/§4/§7 同步 | `check_doc_consistency`、`gen_figures --check` |
+
+**复审状态**：待跑全量 pytest + 7 守卫 + CI 首跑后给复审结论（B1–B12 逐项核销）。

@@ -24,19 +24,19 @@
 
 | 指标 | 当前值 | 口径 / 定义 | 采集命令或来源 | 日期 |
 | --- | --- | --- | --- | --- |
-| 引擎代码 | 14,440 行 | `research_engine/**/*.py`，非空行（`ReadAllLines` 过滤空行，含注释） | 见 `tools/gen_figures.py` 同口径脚本 | 2026-11-22 |
-| 后端代码 | 14,084 行 | `web/backend/**/*.py`，同上 | 同上 | 2026-11-22 |
-| 测试代码 | 24,569 行 | `tests/**/*.py`，同上 | 同上 | 2026-11-22 |
+| 引擎代码 | 14,498 行 | `research_engine/**/*.py`，非空行（`ReadAllLines` 过滤空行，含注释） | 见 `tools/gen_figures.py` 同口径脚本 | 2026-11-22 |
+| 后端代码 | 14,092 行 | `web/backend/**/*.py`，同上 | 同上 | 2026-11-22 |
+| 测试代码 | 24,651 行 | `tests/**/*.py`，同上 | 同上 | 2026-11-22 |
 | 前端源码 | 9,112 行 | `web/frontend/src/**/*.{ts,tsx}`，同上 | 同上 | 2026-11-22 |
 | E2E 代码 | 1,957 行 | `web/frontend/e2e/**/*.ts`，同上 | 同上 | 2026-11-22 |
-| 测试文件 | 163 个 | `tests/*.py` | 目录计数（`tools/gen_figures.py --check` 校验） | 2026-11-22 |
+| 测试文件 | 164 个 | `tests/*.py` | 目录计数（`tools/gen_figures.py --check` 校验） | 2026-11-22 |
 
 ## 3. 测试与 CI
 
 | 指标 | 当前值 | 口径 / 定义 | 采集命令或来源 | 日期 |
 | --- | --- | --- | --- | --- |
-| pytest 收集/执行 | **1570** 项 | 全量 `tests/`；`pytest --collect-only`（收集统计） | `py -3.13 -m pytest tests/ --collect-only` | 2026-11-22 |
-| 零依赖 lane（本机） | **1570 收集 / 1490 通过 / 81 跳过 / 0 失败** | 2026-11-22 本机复验（Python 3.13 + `.deps`）；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 | `py -3.13 -m pytest tests/ --tb=no` | 2026-11-22 |
+| pytest 收集/执行 | **1575** 项 | 全量 `tests/`；`pytest --collect-only`（收集统计） | `py -3.13 -m pytest tests/ --collect-only` | 2026-11-22 |
+| 零依赖 lane（本机） | **1575 收集 / 1495 通过 / 80 跳过 / 0 失败**（另有 1 个模块级 collection-skip，pytest 汇总显示 81） | 2026-11-22 本机复验（Python 3.13 + `.deps`）；跳过项为真实 PG/Redis 集成用例，由 CI `infra` job 强制执行 | `py -3.13 -m pytest tests/ --tb=no` | 2026-11-22 |
 | 跳过项性质 | 真实 PG/Redis 集成用例 | 由 CI `infra` job 通过 `DR_TEST_DATABASE_URL` / `DR_TEST_REDIS_URL` 强制执行 | `tests/conftest.py` | 2026-10-26 |
 | CI job 数 | 5 个定义 / **7 项检查** | lint-and-test（3.11/3.12/3.13 矩阵）+ infra + frontend + e2e + security-windows（Windows 专属安全路径） | `.github/workflows/ci.yml` | 2026-11-22 |
 | CI 守卫 | 6 个 | 评测产物白名单 / 前端边界 / 公开仓 IP / 文档漂移 / Tailwind token / UI 反模式 | `tools/check_*.py` | 2026-10-27 |
@@ -52,10 +52,14 @@
 | after 基线完成率 | **60/60（100%）** | 20 题 × 3 轮，零异常；before 三轮中两轮各 1 题 failed | `docs/eval-w8-after-baseline.md` | 2026-09-19 |
 | coverage | **39.8%** | after 3 轮均值；同题配对 n=18 | `docs/eval-w8-after-baseline.md:37` | 2026-09-19 |
 | citation_accuracy | **78.3%** | 机器口径（LLM-as-judge），裁判与主链路同族、**非独立** | 同上 `:38` | 2026-09-19 |
+| citation fidelity（主链路，10-07 缺陷期基线） | **52.2% ± 4.9pp** | 主链路 validator 口径；该基线文档已标注「缺陷期，勿当现状引用」 | `docs/eval-w9-baseline.md:56` | 2026-10-07 |
+| citation fidelity（独立裁判，ok 子集） | **85.4% ± 1.8pp** | F15 独立裁判；6/20 题裁判超时，非随机缺失 | `docs/eval-w9-baseline.md:58` | 2026-10-07 |
+| citation 严格口径（单次自动快照） | **43.3% ± 8.3pp** | 严格 existence AND faithful；`verdict=suspicious` | `docs/eval-report.md:56` | 2026-10-07 |
+| uncited_fact_ratio | **69.1% ± 1.1pp** | 无引用事实句占比（缺陷期基线）；单次快照为 0.7113 | `docs/eval-w9-baseline.md:61`、`eval-report.md:29` | 2026-10-07 |
 | retrieval_hit_rate | **52.7%** | after 3 轮均值 | 同上 `:39` | 2026-09-19 |
-| 信息不足标记率 | **78.7%** | 报告小节含「信息不足」的比例；只观测、无达标线 | `README.md` §3 / `docs/eval-w8-after-baseline.md` | 2026-09-19 |
+| 信息不足标记率 | **78.7%** | 报告小节含「信息不足」的比例；只观测、无达标线（单次快照 74.2%） | `docs/eval-w8-after-baseline.md`、`docs/eval-report.md:73` | 2026-09-19 / 2026-10-07 |
 | 配对判定 | **四指标全部不可判定** | coverage Δ=−5.1pp（SE 3.81，MDE 10.66pp）；citation Δ=+3.1pp（MDE 9.21）；retrieval Δ=−2.5pp（MDE 3.88）；steps Δ=−1.2（MDE 1.36） | 同上 `:37-40` | 2026-09-19 |
-| `SCORER_VERSION` | **w9.1** | 指标口径断点；跨版本不可直接比较 | `research_engine/eval/aggregate.py:40` | 2026-10-11 |
+| `SCORER_VERSION` | **w9.2** | 指标口径断点；跨版本不可直接比较 | `research_engine/eval/aggregate.py:40` | 2026-11-22 |
 | 单轮成本/耗时 | **¥0.79~0.92 / 48~51 分钟** | 20 题、并发 3、qwen-plus + qwen-turbo | `docs/eval-w8-after-baseline.md:26` | 2026-09-19 |
 
 > ⚠️ **禁止表述**：不得说「W8 让覆盖率提升/下降 Xpp」「引用准确率提升 3.1pp」「系统少跑 1.2 步」——
@@ -89,7 +93,7 @@
 
 - **断点 1**：2026-09-19 W8 after 基线结案（D-18，3 轮不续跑）；此前 before 数字不可与新口径直接比较。
 - **断点 2**：2026-10-11 `SCORER_VERSION = w9.1`（需求 34 E1~E5 证据面/校验输入口径变更）；跨断点指标不可相减。
-- **断点 3**：2026-10-26 本表建立；此前 README / 简历 / 面试材料中的数字（996 测试、49 E2E、28 需求、11 ADR、232 提交）
+- **断点 4**：2026-11-22 `SCORER_VERSION = w9.2`（validator 空报告 citation_coverage 1.0→None，无事实句报告上 uncited_fact_ratio 由 0.0 变缺测）；跨断点不可相减。\n- **断点 3**：2026-10-26 本表建立；此前 README / 简历 / 面试材料中的数字（996 测试、49 E2E、28 需求、11 ADR、232 提交）
   一律作废，不得再引用。
 - **禁止**：把单机压测当线上容量；把 n=1 的 standard 耗时当稳定基线；把同族 LLM judge 说成“独立裁判”；
   把 39.8% 与 44.9% 比较后宣称“下降”；在样本不足时宣称质量提升/下降。

@@ -77,3 +77,21 @@ def test_worker_factory_forwards_profile(monkeypatch):
     profile = SimpleNamespace(name="standard")
     factory(profile=profile)
     assert captured["profile"] is profile
+
+def test_legacy_set_profile_is_not_reset_when_not_injected():
+    """2026-11 PR 审阅修复：未显式注入档位时不得覆盖调用方 set_profile 的旧约定。"""
+    from research_engine.runtime_profile import current_profile, set_profile
+
+    profile = SimpleNamespace(
+        name="legacy-quick", max_total_hops=20, max_subquestions=4,
+        token_budget=100000, max_replan=1, per_subq_hop_cap=5)
+    g = DeepResearchGraph()  # 不传 profile ⇒ _UNSET
+    fake = _FakeInvokeGraph()
+    g.graph = fake
+    set_profile(profile)
+    try:
+        g.run("主题")
+        assert fake.seen_profile is profile, "旧 set_profile 约定必须继续生效"
+        assert current_profile() is profile
+    finally:
+        set_profile(None)

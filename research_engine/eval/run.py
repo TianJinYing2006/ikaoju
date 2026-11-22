@@ -176,6 +176,8 @@ def _run_one(
         INVOKE_STATUS: "failed",
         "raw": {
             "q_id": q_id, "query": topic, "error": last_err, INVOKE_STATUS: "failed",
+            # 2026-11 PR 审阅修复：失败路径也要落账本（已耗 token 不得静默丢失）
+            "token_ledger": getattr(run_graph, "last_ledger", None),
             **raw_provenance_fields(p),
             "dataset_version": meta.get("version", "unknown"),
         },
@@ -241,12 +243,16 @@ def phase1(dataset: Dict[str, Any], run_dir: Path, concurrency: int) -> None:
                     (raw_dir / f"{res['raw']['q_id']}.raw.json").write_text(
                         json.dumps(res["raw"], ensure_ascii=False, indent=1), encoding="utf-8"
                     )
+                    ledgers.append(res["raw"].get("token_ledger"))
                     done_failed += 1
-        # 成本归因（2026-11）：只信每 run 的 TokenLedger 快照汇总（并发安全、无全局计数）。
-        # 测试替身 graph 没有账本 ⇒ **不写** phase1_global_stats.json，让下游显式降级
-        # （宁可标注「无法按模型拆分成本」，也不伪造 0 或回退到已删除的类级计数器）。
+        # 成本归因（2026-11，PR 审阅修复）：逐 run 账本 + **显式降级标记**。
+        # 超时项没有 raw/账本（线程仍在跑）⇒ 只能标 degraded，绝不静默当完整成本。
         if any(isinstance(item, dict) for item in ledgers):
             global_stats = merge_snapshots(ledgers)
+            if timeout_ids:
+                global_stats["cost_degraded"] = True
+                global_stats["cost_degraded_reason"] = (
+                    f"timeout_items={len(timeout_ids)}: {sorted(timeout_ids)[:5]}")
             (run_dir / "phase1_global_stats.json").write_text(
                 json.dumps(global_stats, ensure_ascii=False, indent=1), encoding="utf-8"
             )
@@ -413,14 +419,24 @@ def _build_cost_block(run_dir: Path) -> Dict[str, Any]:
         cg = compute_cost(
             st.get("model_io_stats") or {}, st.get("model_stats") or {}, st.get("role_stats") or {}
         )
+        # 2026-11 PR 审阅修复：Phase1 有超时/失败项时上游会写 cost_degraded，
+        # 这里必须透传（否则成本块仍显示「完整」）。
+        degraded = bool(st.get("cost_degraded"))
+        degraded_reason = str(st.get("cost_degraded_reason") or "")
+        if degraded:
+            print(
+                f"⚠️ [D1] {run_dir.name}：{degraded_reason or 'phase1 成本不完整'} "
+                "⇒ 成本块已标 cost_degraded=true（数值为已归因部分的下界）",
+                file=sys.stderr,
+            )
         return {
             "total_tokens": cg["total_tokens"],
             "cost_yuan": cg["total_cost"],
             "per_model": cg["per_model"],
             "per_role": cg["per_role"],
-            "cost_degraded": False,
+            "cost_degraded": degraded,
             "cost_basis": info["basis"],
-            "cost_degraded_reason": "",
+            "cost_degraded_reason": degraded_reason,
         }
     tokens = sum_tokens_from_raw(run_dir)
     print(

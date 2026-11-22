@@ -1811,6 +1811,9 @@ def webauthn_register_complete(req: WebAuthnRegisterCompleteRequest,
 def webauthn_authenticate_begin(req: WebAuthnAuthenticateBeginRequest,
                                 request: Request) -> dict:
     """Passkey 登录第一步：邮箱可空（usernameless / 可发现凭据）。"""
+    # 2026-11 PR 审阅修复：未配置 DR_WEBAUTHN_* 时必须 fail-closed（503），
+    # 不得像旧实现那样用 localhost 默认 RP 下发挑战。
+    _require_webauthn_ready()
     email = normalize_email(req.email)
     if email and not is_valid_email(email):
         raise http_error("invalid_request", "邮箱格式不合法")
@@ -2408,6 +2411,12 @@ def retry_run(run_id: str, request: Request) -> StartResponse:
     idempotency_key = f"retry-{run_id}"
     ignored = payload.get("ignored_overrides") or {}
     fingerprint = _request_fingerprint(topic, instructions, profile.name)
+    # 2026-11 PR 审阅修复：幂等命中**先于**输入安全闸（与主创建路径同序）。
+    # 否则首次重试成功后再点一次，只要审核 provider 降级/词表变化就会返回 4xx，
+    # 违背「重复点击返回同一个新 run」的重试幂等承诺。
+    existing = _idempotent_existing(owner, idempotency_key, fingerprint)
+    if existing is not None:
+        return StartResponse(run_id=existing["run_id"])
     try:
         # 2026-11 修复：重试也必须过输入安全闸（此前直接进 _start_queued，绕过审核/注入预检）；
         # 已拦截过的输入重试时同样被拦，审核 provider 降级时同样 fail-closed。

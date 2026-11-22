@@ -37,7 +37,10 @@ from research_engine.eval.stats import summarize_metric
 #: 引用携带逐字引文/偏移、交付自检与分级处置入 report_display；
 #: **与 w9.0 及更早的 run 数值不可直接相减**（本批次未采 before 基线，
 #: 配对结论随批次 2 的 12.11 新基线以新口径统一重建）。
-SCORER_VERSION = "w9.1"
+#: w9.2（2026-11-22，PR 审阅修复）：validator 空报告 `citation_coverage`
+#: 由 1.0 改为 None（fail-open 修复）——`uncited_fact_ratio` 在无事实句报告上
+#: 由 0.0 变为「缺测」，指标输入口径变化；**与 w9.1 及更早的 run 数值不可直接相减**。
+SCORER_VERSION = "w9.2"
 
 #: 指标名 → (metrics 段名, 段内键名)。**新增指标只改这里**。
 METRIC_SOURCES: Tuple[Tuple[str, str, str], ...] = (

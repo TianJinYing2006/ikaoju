@@ -80,7 +80,7 @@ web/frontend/playwright-report/
 web/frontend/.playwright/
 
 # 非产品代码的工作区素材（2026-11 从 git 跟踪集合移出；本地文件保留）：
-# - icon-lab/：品牌图标设计工作区（50 个 PNG/SVG）
+# - icon-lab/：品牌图标设计工作区（40 个 PNG/SVG）
 # - ppt-report/：项目汇报材料
 # 需要恢复跟踪：git restore --source=dev --staged --worktree icon-lab ppt-report
 icon-lab/

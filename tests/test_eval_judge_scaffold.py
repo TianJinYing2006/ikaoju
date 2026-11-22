@@ -35,15 +35,20 @@ def test_judge_model_follows_explicit_config(monkeypatch):
     assert citation_judge_is_independent() is False
 
 
-def test_independence_requires_different_declared_family(monkeypatch):
+def test_configured_judge_does_not_claim_independence(monkeypatch):
+    """2026-11 PR 审阅修复：配置不同模型族**不能**把独立性置 true。
+
+    事实是 headline citation_accuracy 仍直读主链路 validator；配置只影响另起的
+    裁判实例，不构成独立复判。该字段必须恒 False，直到实现真正的独立复判。
+    """
     _reset_judge_config(monkeypatch)
     monkeypatch.setattr(config.eval, "judge_model", "qwen-max")
     monkeypatch.setattr(config.eval, "judge_family", "qwen")  # 与主链路同族
     assert citation_judge_is_independent() is False
 
-    monkeypatch.setattr(config.eval, "judge_family", "deepseek")  # 声明不同族
-    assert citation_judge_is_independent() is True
-    assert judge_provenance()["citation_judge_independent"] is True
+    monkeypatch.setattr(config.eval, "judge_family", "deepseek")  # 声明不同族也不行
+    assert citation_judge_is_independent() is False
+    assert judge_provenance()["citation_judge_independent"] is False
 
 
 def test_cli_overrides_are_applied(monkeypatch):
@@ -53,7 +58,8 @@ def test_cli_overrides_are_applied(monkeypatch):
     assert config.eval.judge_model == "deepseek-chat"
     assert config.eval.judge_family == "deepseek"
     assert judge_model_name() == "deepseek-chat"
-    assert citation_judge_is_independent() is True
+    # 配置被记录，但不改写「裁判是否独立」的事实
+    assert citation_judge_is_independent() is False
 
 
 def test_cli_empty_values_do_not_override(monkeypatch):

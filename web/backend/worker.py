@@ -715,16 +715,15 @@ class Worker:
             rag_revision = 0
         rag_scope = RagScope(user_id=row.get("user_id"), revision=rag_revision)
         factory = self._graph_factory
+        # 2026-11 PR 审阅修复：始终设置线程级 scope（证据身份运行期读取 current_scope()；
+        # 只靠显式注入会让 owner run 的 RAG evidence_id scope 令牌恒空）。
+        set_scope(user_id=rag_scope.user_id, revision=rag_scope.revision)
         graph_kwargs = {}
         if getattr(factory, "accepts_rag_scope", False):
             graph_kwargs["rag_scope"] = rag_scope
         if getattr(factory, "accepts_profile", False):
             graph_kwargs["profile"] = profile  # 2026-11：档位显式注入
-        if graph_kwargs:
-            graph = factory(**graph_kwargs)
-        else:
-            set_scope(user_id=rag_scope.user_id, revision=rag_scope.revision)
-            graph = factory()
+        graph = factory(**graph_kwargs) if graph_kwargs else factory()
         # 需求 35 R3（TBD-4/5）：解析执行模式（fresh/resumed/replayed）+ 预算对账
         execution_mode, resume_info = resolve_execution_mode(
             graph, run_id, ownership.attempt, self._store)

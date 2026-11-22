@@ -198,3 +198,28 @@ def test_cross_user_actions_are_404(client: TestClient, store: FakeStore):
     assert client.post(f"/api/runs/{row['run_id']}/archive",
                        headers=_csrf(client)).status_code == 404
     assert client.post(f"/api/runs/{row['run_id']}/retry", headers=_csrf(client)).status_code == 404
+
+# ---------------------------------------------------------------- 2026-11 PR 审阅修复
+
+def test_retry_idempotency_precedes_input_gate(client: TestClient, store: FakeStore,
+                                               monkeypatch):
+    """重复重试必须在输入闸之前命中幂等：审核降级不该改变「同一 run」的承诺。"""
+    assert _register(client, "retry2@example.com").status_code == 200
+    uid = _user_id(client)
+    failed = _seed(store, user_id=uid, status="FAILED", topic="失败任务")
+
+    first = client.post(f"/api/runs/{failed['run_id']}/retry", headers=_csrf(client))
+    assert first.status_code == 200
+    new_id = first.json()["run_id"]
+
+    class _Blocked:
+        matches = ["badword"]
+        provider = "local_rules"
+        decision_id = "dec-2"
+        degraded = False
+        decision = "block"
+
+    monkeypatch.setattr(api, "evaluate_input", lambda _text: _Blocked())
+    again = client.post(f"/api/runs/{failed['run_id']}/retry", headers=_csrf(client))
+    assert again.status_code == 200
+    assert again.json()["run_id"] == new_id, "幂等命中不得被输入闸改写"

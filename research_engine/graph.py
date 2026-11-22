@@ -59,6 +59,11 @@ from research_engine.streaming import (  # W9（需求 9 §7.1）：流式运行
     RunStep,
 )
 
+#: 2026-11（PR 审阅修复）：档位未显式注入的哨兵值。
+#: 不用 None 区分「没传」与「显式传 None」：未传时必须**不动** contextvar，
+#: 保留旧「先 set_profile 再 create_graph」用法（smoke 工具/CLI），否则静默退回全局 config。
+_UNSET = object()
+
 #: F11（3b）：引用返工的最大执行次数（硬上限，防「修复-校验」振荡；1 = 只返工一次）
 MAX_REPAIR_PASSES = 1
 
@@ -149,7 +154,7 @@ class DeepResearchGraph:
     """深度研究图（W1：显式 frontier 循环 + Critic 条件边）。"""
 
     def __init__(self, checkpointer: Any = None, *, rag_scope: Any = None,
-                 profile: Any = None):
+                 profile: Any = _UNSET):
         # 需求 35 R3（TBD-5）：checkpointer 可注入——Worker 传 PG saver（跨进程恢复）；
         # CLI/测试默认 None ⇒ MemorySaver（进程内，行为与历史一致）。
         # 2026-11：rag_scope / profile 显式注入（检索作用域、运行档位），主链路不再依赖
@@ -717,6 +722,17 @@ class DeepResearchGraph:
             "progress": [{"stage": "render", "msg": "溯源渲染完成：类型标注+失败隔离+运行溯源"}],
         }
 
+    def _profile_scope(self):
+        """档位作用域：显式注入才覆盖；未传（``_UNSET``）时**不动** contextvar。
+
+        2026-11 PR 审阅修复：旧实现无条件 ``use_profile(self._profile)``，未传时把
+        调用方先 ``set_profile`` 的档位重置为 None（smoke 工具/旧 CLI 静默退回全局 config）。
+        """
+        profile = getattr(self, "_profile", _UNSET)
+        if profile is _UNSET:
+            return nullcontext()
+        return use_profile(profile)
+
     def run(
         self,
         topic: str,
@@ -749,7 +765,7 @@ class DeepResearchGraph:
         try:
             # 2026-11：运行档位作为**显式输入**在 invoke 期间生效，结束后恢复原值 ——
             # 不再要求调用方「先 set_profile 再建图」，也不会把档位泄漏给同线程的下一次 run。
-            with use_profile(getattr(self, "_profile", None)):
+            with self._profile_scope():
                 if not self.trace_id:
                     result = self.graph.invoke(initial, cfg)
                 else:
@@ -895,7 +911,7 @@ class DeepResearchGraph:
         with ctx:
             try:
                 # 2026-11：档位显式输入在流式运行期间生效，结束后恢复（不泄漏给下一次 run）。
-                with use_profile(getattr(self, "_profile", None)):
+                with self._profile_scope():
                     yield from self._iter_steps(
                         stream_input, cfg,
                         run_ctx.cancelled if should_cancel is not None else None,
@@ -996,7 +1012,7 @@ class DeepResearchGraph:
 
 
 def create_graph(checkpointer: Any = None, *, rag_scope: Any = None,
-                 profile: Any = None) -> DeepResearchGraph:
+                 profile: Any = _UNSET) -> DeepResearchGraph:
     """构建研究图；``checkpointer=None`` ⇒ MemorySaver（需求 35 R3：Worker 传 PG saver）。
 
     2026-11：``rag_scope`` / ``profile`` 显式传入（多租户检索作用域、运行档位）；

@@ -152,3 +152,25 @@ def test_eval_replay_override_rejects_missing_dir(tmp_path, monkeypatch):
     assert config.search.provider == "bocha"
     assert config.search.replay_dir == ""
     assert config.search.enable_arxiv is True
+
+# ---------------------------------------------------------------- 2026-11 PR 审阅修复
+
+def test_replay_empty_results_is_empty_result_like_live_provider(tmp_path):
+    """录制为空 results 时必须与活源一致归 empty_result（否则回放降级口径不可比）。"""
+    provider = ReplaySearchProvider(_write_fixture(tmp_path, _fixture()))
+    resp = provider.search("空查询")
+    assert resp.ok is False
+    assert resp.failure_reason == "empty_result"
+    assert "empty_result" in resp.failure_detail
+
+
+def test_provenance_records_replay_dir_and_fixture_hash(tmp_path, monkeypatch):
+    """不同 fixture 的 run 必须可区分：config_snapshot 记录 replay_dir + 内容哈希。"""
+    from research_engine.eval import provenance
+
+    fixture_dir = _write_fixture(tmp_path, _fixture())
+    monkeypatch.setattr(config.search, "replay_dir", str(fixture_dir))
+    snap = provenance.config_snapshot()
+    assert snap["search_replay_dir"] == str(fixture_dir)
+    assert len(snap["replay_fixture_sha256"]) == 64
+    assert snap["search_enable_arxiv"] is config.search.enable_arxiv

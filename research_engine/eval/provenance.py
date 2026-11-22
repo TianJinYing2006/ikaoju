@@ -116,6 +116,22 @@ def experiment_snapshot() -> Dict[str, bool]:
     return {name: bool(getattr(exp, name)) for name in EXPERIMENT_SWITCHES}
 
 
+def replay_fixture_sha256() -> str:
+    """replay fixture 的内容指纹（无 replay 配置/不可读 ⇒ 空串，如实缺省不猜测）。"""
+    from pathlib import Path as _Path
+
+    replay_dir = (config.search.replay_dir or "").strip()
+    if not replay_dir:
+        return ""
+    path = _Path(replay_dir)
+    if path.suffix != ".json":
+        path = path / "search_replay.json"
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
 def config_snapshot() -> Dict[str, Any]:
     """全项目配置唯一真相源（W8 §10.4 第 5 条升级）。
 
@@ -141,6 +157,10 @@ def config_snapshot() -> Dict[str, Any]:
         "per_subq_hop_cap": config.research.per_subq_hop_cap,
         "max_replan": config.research.max_replan,
         "search_provider": config.search.provider,
+        # 2026-11 PR 审阅修复：确定性回放的完整口径（否则不同 fixture 的 run 不可区分）
+        "search_enable_arxiv": config.search.enable_arxiv,
+        "search_replay_dir": config.search.replay_dir,
+        "replay_fixture_sha256": replay_fixture_sha256(),
         # 需求 36（TBD-5）：HITL 三开关的**运行期生效值**（eval 强制关闭 ⇒ 恒 False，
         # 记录在案以证明「这批数产生于关闭态」，与历史口径可比）
         "hitl_switches": {
@@ -178,32 +198,19 @@ CITATION_JUDGE_NOTE = (
 
 
 def citation_judge_is_independent() -> bool:
-    """裁判是否**可证明**独立于被测链路（2026-11 独立裁判脚手架）。
+    """裁判是否**可证明**独立于被测链路 —— 2026-11 PR 审阅修复后**恒为 False**。
 
-    判据（全部满足才为 True，不做推断）：
-    1. 显式配置了 `config.eval.judge_model`（默认空 = 回落 smart_model，属旧口径）；
-    2. 显式声明了 `config.eval.judge_family`；
-    3. 声明的模型族与主链路（validator / smart）的模型族不同。
+    为什么不再由配置推导：`citation_accuracy` 仍直读主链路 validator 的裁决产物
+    （见 ``eval/metrics.py`` 的注释），配置一个不同模型族只改变了「另起的裁判实例」，
+    并没有让 headline 指标变成独立复判。把配置当独立性证明会让报告宣称
+    「跨 run 可直接比较」，与 D-08 / 需求 8 的「事实判断」冲突。
+    真正的独立性需要：headline 指标由独立复判产生（另立实现 + 测试 + 断点登记）后，
+    才允许把该字段置 True。
 
-    模型族按模型名前缀取（`qwen-plus` → `qwen`）；无法确定即判 False ——
-    「不能证明的独立性」不得写进 provenance。
+    `DR_EVAL_JUDGE_*` 配置仍会被记录（coverage_judge_model / judge 账本），
+    仅用于未来独立复判接入，不构成独立性声明。
     """
-    from config import config as _cfg
-
-    judge_model = (_cfg.eval.judge_model or "").strip()
-    judge_family = (_cfg.eval.judge_family or "").strip().lower()
-    if not judge_model or not judge_family:
-        return False
-    try:
-        from research_engine.agents.validator import validator_model_name
-
-        main_models = {validator_model_name(), _cfg.llm.smart_model}
-    except Exception:  # noqa: BLE001 —— provenance 不得因客户端构造失败而崩溃
-        main_models = {_cfg.llm.smart_model}
-    main_families = {
-        model.strip().lower().split("-")[0] for model in main_models if model
-    }
-    return judge_family not in main_families
+    return False
 
 
 def judge_provenance() -> Dict[str, Any]:
