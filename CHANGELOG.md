@@ -7,6 +7,7 @@
 
 ### Changed
 
+- **后端按域拆分第十六刀（share 管理）**：`POST/GET/DELETE /api/runs/{run_id}/share` 与 `ShareCreateRequest` 迁入 `web/backend/api/share_manage.py`（94 行），`main.py` 2608→2566 行；分享闸/只读正文链/状态序列化暂由 main 注入（公开读取随下一刀迁移），行为不变，分享 API 测试全绿。
 - **后端按域拆分第十五刀（rag 上传域收官）**：`POST /api/rag/ingest`（流式落盘 + 三重校验 + 异步登记/本地同步摄取）迁入 `web/backend/api/rag_ingest.py`（160 行），`main.py` 2718→2608 行；隔离区路径/限流/鉴权注入，`stream_to_temp` 以可注入 callable 保留测试 monkeypatch 语义；rag 上传/孤儿清理/失败关闭测试全绿。rag 域全部路由收官。
 - **后端按域拆分第十四刀（rag 管理域）**：`GET /api/rag/ingestions/{id}`、`DELETE /api/rag/docs` 迁入 `web/backend/api/rag_admin.py`（102 行），`main.py` 2788→2718 行；删除「验证归零」、隔离区清理、鉴权开关与失败文案以注入方式保持。顺带把 `rag_write` 的归属前置内聚到其模块（`_owned_doc`），删除已无引用的 main helper。rag API/管理测试全绿。
 - **后端按域拆分第十三刀（rag 写域）**：`PATCH /api/rag/docs`、`POST /api/rag/docs/rechunk`、`POST /api/rag/docs/reembed` 与重建前置迁入 `web/backend/api/rag_write.py`（94 行），`main.py` 2841→2788 行；归属前置/限流/审计/状态校验以注入方式保持，rag API/管理测试全绿。
