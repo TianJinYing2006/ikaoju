@@ -24,6 +24,24 @@
 
 ---
 
+## 界面与演示
+
+以下截图与视频都是**真实构建产物在 DR_DEMO 假图下的渲染**（不调用 LLM、不产生费用；阶段/事件/报告/证据链与真实链路同一条 SSE 管线），
+不是设计稿。截图来自视觉回归基线（Linux CI 渲染，见 `web/frontend/e2e/visual-baseline.spec.ts`），刷新方法同该文件注释。
+
+| 落地页 | 工作台（启动态） |
+| --- | --- |
+| ![落地页](docs/assets/screenshots/landing-hero.png) | ![工作台](docs/assets/screenshots/workbench-idle.png) |
+
+| 报告卡片 | 页边证据栏 |
+| --- | --- |
+| ![报告](docs/assets/screenshots/report-card.png) | ![证据栏](docs/assets/screenshots/evidence-margin.png) |
+
+- **90 秒演示**：[`docs/assets/demo-90s.webm`](docs/assets/demo-90s.webm)（约 2.0MB，Chrome/Edge/Safari 可播；录制脚本 [`tools/record_demo.cjs`](tools/record_demo.cjs)）
+- 演示覆盖：落地页 → 提交主题 → 阶段进度 → 报告正文 → 引用/证据一览。复现步骤见录制脚本头部注释。
+
+---
+
 ## 三个核心设计
 
 ### 1. 决策循环在图里，不在 prompt 里
