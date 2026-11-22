@@ -59,6 +59,7 @@ from .api.health import build_health_router
 from .api.meta import router as meta_router
 from .api.mfa import build_mfa_router
 from .api.ops import build_ops_router
+from .api.runs_manage import build_runs_manage_router
 from .api.webauthn import build_webauthn_manage_router
 from .appeals import submit_appeal
 from .auth import (
@@ -853,6 +854,18 @@ app.include_router(build_webauthn_manage_router(
 ))
 
 
+# 2026-11 后端按域拆分（第十一刀）：任务管理路由列表/重命名。
+app.include_router(build_runs_manage_router(
+    get_store=lambda: store,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    require_user=lambda req: _require_user(req),
+    authorize_run=lambda req, rid: _authorize_run(req, rid),
+    check_csrf=lambda req: _check_csrf(req),
+    audit=lambda action, **kwargs: _audit(action, **kwargs),
+    run_brief=lambda row: _run_brief(row),
+))
+
+
 def _check_csrf(request: Request) -> None:
     """双提交 Cookie 校验（仅在启用鉴权后生效；登录/注册除外）。"""
     if not AUTH_REQUIRED:
@@ -1275,10 +1288,6 @@ def _verify_mfa_factor(user_id: str, factor: dict, code: str) -> str:
 
 # ------------------------------------------------------------------ MFA：TOTP + 恢复码（需求 20 P1-3）
 
-def _iso(value) -> Optional[str]:
-    return value.isoformat() if value is not None else None
-
-
 # ------------------------------------------------------------------ Passkey：WebAuthn（需求 20 P1-2）
 
 
@@ -1573,39 +1582,8 @@ def run_status(run_id: str, request: Request) -> dict:
     return snap
 
 
-@app.get("/api/runs")
-def list_runs(
-    request: Request,
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    status: Optional[str] = Query(None, description="按状态过滤（逗号分隔，如 RUNNING,FAILED）"),
-    q: Optional[str] = Query(None, max_length=100, description="关键词（topic 模糊搜索）"),
-    archived: bool = Query(False, description="true=只看归档；默认排除归档"),
-) -> dict:
-    """历史任务列表（P2-C / 需求 22）：读任务库；未配置库时结构化 503。
-
-    P4-A：鉴权开启时只返回当前用户的 run。
-    需求 22：`q` 关键词搜索 + `archived` 归档过滤 + 置顶优先排序。
-    """
-    if store is None:
-        raise http_error(
-            "persistence_unavailable",
-            "未配置任务库（DR_DATABASE_URL），无法列出历史任务",
-        )
-    statuses = [item.strip() for item in status.split(",") if item.strip()] if status else None
-    keyword = (q or "").strip() or None
-    rows = _store_call(store.list_runs, user_id=_require_user(request),
-                       limit=limit, offset=offset, statuses=statuses,
-                       q=keyword, archived=archived)
-    return {"runs": [_run_brief(row) for row in rows], "limit": limit, "offset": offset}
-
-
 #: 需求 22：可重试的终态（失败 / 失联 / 超时）；成功与取消不重试
 RETRYABLE_STATUSES = ("FAILED", "LOST", "TIMED_OUT")
-
-
-class RenameRunRequest(BaseModel):
-    topic: str = Field(..., max_length=MAX_TOPIC_LENGTH)
 
 
 def _owned_run_row(request: Request, run_id: str) -> tuple[Optional[str], dict]:
@@ -1618,20 +1596,6 @@ def _owned_run_row(request: Request, run_id: str) -> tuple[Optional[str], dict]:
     if row is None:
         raise http_error("run_id_not_found", f"run_id 不存在：{run_id}")
     return owner, row
-
-
-@app.patch("/api/runs/{run_id}")
-def rename_run(run_id: str, req: RenameRunRequest, request: Request) -> dict:
-    """需求 22：重命名（仅本人）。导出文件名随 topic 变化属预期行为，审计留痕。"""
-    owner, row = _owned_run_row(request, run_id)
-    topic = req.topic.strip()
-    if not topic:
-        raise http_error("empty_topic", "topic 不能为空")
-    if not _store_call(store.update_topic, run_id, topic, user_id=owner):
-        raise http_error("run_id_not_found", f"run_id 不存在：{run_id}")
-    _audit("run_renamed", request=request, actor_user_id=owner, target_type="run",
-           target_id=run_id, detail={"old_topic": row["topic"][:200], "new_topic": topic[:200]})
-    return {"ok": True, "run_id": run_id, "topic": topic}
 
 
 @app.post("/api/runs/{run_id}/pin")

@@ -7,6 +7,7 @@
 
 ### Changed
 
+- **后端按域拆分第十一刀（runs 管理：列表/重命名）**：`GET /api/runs`、`PATCH /api/runs/{run_id}` 与 `RenameRunRequest` 从 `main.py` 抽到 `web/backend/api/runs_manage.py`（83 行），`main.py` 3067→3031 行；任务库访问/归属校验/审计/`_run_brief` 以注入方式保持原实现，并清理了一处迁移遗留的重复 `_iso`。既有历史/重命名/归属测试全绿。下一刀迁置顶/归档与重试。
 - **后端按域拆分第十刀（Passkey 域收官）**：`authenticate/begin`、`authenticate/complete`、`DELETE /api/auth/webauthn/{credential_id}` 与剩余模型迁入 `web/backend/api/webauthn.py`（283 行）；Passkey 6 条路由全部在 api 层，`main.py` 3221→3067 行（-154），并移除 main 中已无引用的 passkey 薄包装。WebAuthn 协议细节仍走 `passkeys.py`、闸/视图/限流走 `webauthn.py` 服务层，行为与计数异常防护不变，Passkey/鉴权/MFA 测试全绿。
 - **后端按域拆分第九刀（Passkey 管理路由）**：`GET /api/auth/webauthn`、`POST /api/auth/webauthn/register/begin`、`POST /api/auth/webauthn/register/complete` 与 `WebAuthnRegisterBegin/CompleteRequest` 从 `main.py` 抽到 `web/backend/api/webauthn.py`（132 行），`main.py` 3297→3221 行（-76）；协议细节仍走 `passkeys.py`、闸/视图/限流走 `webauthn.py` 服务层，Passkey/鉴权测试全绿。下一刀迁登录认证路由与删除凭据。
 - **后端按域拆分第八刀（Passkey 服务层）**：Passkey 的可用性闸 / 凭据视图序列化 / 管理与登录限流从 `main.py` 收敛到 `web/backend/webauthn.py`（57 行，限流器/审计/时间格式化/client_key 显式注入）；`main.py` 保留同名薄包装，3308→3297 行；行为不变，Passkey/鉴权/MFA 测试全绿。后续两刀分别迁管理路由与登录认证路由。
