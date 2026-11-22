@@ -5,6 +5,11 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-22
+
+> 2026-11「可审计性与架构收敛」批次：RunContext / run 级 token 账本 / RAG 作用域与运行档位显式注入 /
+> 独立裁判与确定性回放脚手架 / CI 门禁（coverage、mypy、Windows 安全 job）与文档口径收口。
+
 ### Added
 
 - **`research_engine/runtime/`（ADR-0019）**：`RunContext`（run_id / trace / 取消谓词）收敛一次 run 的运行期句柄；`with_token_writeback` 节点装饰器保证任意节点 delta 都带 `token_used`，新增节点漏写不可能。
@@ -108,5 +113,6 @@
 
 W1–W6 里程碑版本（初始研究引擎、Web 工作台与基础部署）。
 
+[0.3.0]: https://github.com/TianJinYing2006/DeepResearch/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/TianJinYing2006/DeepResearch/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/TianJinYing2006/DeepResearch/releases/tag/v0.1.0
