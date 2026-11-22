@@ -14,7 +14,6 @@ import logging
 import os
 import secrets
 import shutil
-import socket
 import sys
 import tempfile
 import threading
@@ -24,7 +23,6 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
-from urllib.parse import urlsplit
 
 from fastapi import BackgroundTasks, FastAPI, File, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
@@ -57,6 +55,7 @@ from .agui import (
     sse_frame,
 )
 from .alerts import alert_webhook_url, collect_alerts
+from .api.health import build_health_router
 from .api.meta import LEGAL_DIR, legal_version
 from .api.meta import router as meta_router
 from .appeals import submit_appeal
@@ -655,127 +654,6 @@ def _queue_depth() -> Optional[int]:
         return None
 
 
-@app.get("/api/health")
-def health() -> dict:
-    return {
-        "ok": True,
-        "version": "w9",
-        "demo_mode": DEMO_MODE,
-        "persistence": store is not None,
-        "execution_mode": EXECUTION_MODE,
-        "queue_depth": _queue_depth(),
-        "active_runs": manager.active_runs,
-        "max_concurrent_runs": manager.max_concurrent_runs,
-        "run_timeout_seconds": manager.run_timeout_seconds,
-    }
-
-
-def _probe_target(url: str, default_port: int) -> Optional[tuple[str, int]]:
-    parsed = urlsplit(url)
-    if not parsed.hostname:
-        return None
-    return parsed.hostname, parsed.port or default_port
-
-
-def _tcp_reachable(host: str, port: int, timeout: float = 0.5) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-@app.get("/api/health/live")
-def health_live() -> dict:
-    """liveness：进程活着即 200，不查依赖（依赖抖动不应触发编排层重启）。"""
-    return {"ok": True, "check": "live"}
-
-
-@app.get("/api/health/ready")
-def health_ready(request: Request, response: Response) -> dict:
-    """readiness：只对**已配置**的依赖做探针。
-
-    - PostgreSQL：配置了任务库（P2-C）时用真实 `SELECT 1` 探针，否则退化为 TCP 连接；
-    - Redis：TCP 探针（P3 接队列后升级为 `PING`）；
-    - `not_configured` 不判失败 —— 过渡期（还没接库）不会把本地与 CI 全判红；
-      一旦设置但探不通即 503，由编排层摘流量。
-
-    #337：该端点**未认证**（LB 探针要能打）⇒ `target` 只对持有合法 `X-Ops-Token`
-    的调用方回内网 host:port / endpoint / 异常类型；匿名调用方只看到
-    `configured` / `unreachable`。`status` 字段语义不变（探针只认它）。
-    """
-    verbose = _ops_authorized(request)
-    failed_statuses = {"unreachable", "invalid_url", "unavailable"}
-
-    def target(status: str, detail: str) -> str:
-        if verbose:
-            return detail
-        return "unreachable" if status in failed_statuses else "configured"
-
-    checks = {}
-    for name, env_key, default_port in (
-        ("postgres", "DR_DATABASE_URL", 5432),
-        ("redis", "DR_REDIS_URL", 6379),
-    ):
-        if name == "postgres" and store is not None:
-            try:
-                store.ping()
-                checks[name] = {"status": "ok", "target": target("ok", "dr_database_url")}
-            except Exception as exc:  # noqa: BLE001
-                checks[name] = {
-                    "status": "unreachable",
-                    "target": target("unreachable", f"ping failed: {type(exc).__name__}"),
-                }
-            continue
-        raw = os.getenv(env_key, "").strip()
-        if not raw:
-            checks[name] = {"status": "not_configured"}
-            continue
-        probe = _probe_target(raw, default_port)
-        if probe is None:
-            checks[name] = {"status": "invalid_url"}
-            continue
-        host, port = probe
-        status = "ok" if _tcp_reachable(host, port) else "unreachable"
-        checks[name] = {"status": status, "target": target(status, f"{host}:{port}")}
-    if EXECUTION_MODE == "queue" and store is not None:
-        # P1-3：队列模式下「有活跃 worker」是 readiness 的硬条件
-        try:
-            live = int(store.count_live_workers(
-                within_seconds=WORKER_HEARTBEAT_MAX_AGE_SECONDS))
-        except Exception as exc:  # noqa: BLE001
-            checks["worker"] = {
-                "status": "unreachable",
-                "target": target("unreachable", f"{type(exc).__name__}"),
-            }
-        else:
-            checks["worker"] = {
-                "status": "ok" if live else "unavailable",
-                "live": live,
-                "max_age_seconds": WORKER_HEARTBEAT_MAX_AGE_SECONDS,
-            }
-    object_store = get_object_store()
-    if object_store is not None:
-        # P1-6：配置了对象存储才探针（未配置 = 双轨回落 PG，不判失败）
-        try:
-            object_store.ping()
-        except Exception as exc:  # noqa: BLE001
-            checks["object_storage"] = {
-                "status": "unreachable",
-                "target": target("unreachable", f"{type(exc).__name__}"),
-            }
-        else:
-            checks["object_storage"] = {
-                "status": "ok",
-                "target": target("ok", object_store.endpoint),
-            }
-    failed = [item for item in checks.values()
-              if item["status"] in failed_statuses]
-    if failed:
-        response.status_code = 503
-    return {"ok": not failed, "status": "ready" if not failed else "not_ready", "checks": checks}
-
-
 def _store_call(fn, *args, **kwargs):
     """任务库调用包装：失败转结构化 503（不让裸异常变成 500）。"""
     try:
@@ -926,6 +804,20 @@ def _ops_authorized(request: Optional[Request]) -> bool:
         return False
     provided = request.headers.get("x-ops-token", "")
     return bool(provided) and hmac.compare_digest(provided, OPS_TOKEN)
+
+
+# 2026-11 后端按域拆分（第一刀）：健康域路由 health/live/ready。
+# 依赖以 getter 注入（lambda 在请求时读取 main 的模块级属性，测试 monkeypatch 仍生效）。
+app.include_router(build_health_router(
+    get_store=lambda: store,
+    get_manager=lambda: manager,
+    get_execution_mode=lambda: EXECUTION_MODE,
+    get_demo_mode=lambda: DEMO_MODE,
+    get_worker_max_age=lambda: WORKER_HEARTBEAT_MAX_AGE_SECONDS,
+    get_object_store=lambda: get_object_store(),
+    ops_authorized=lambda req: _ops_authorized(req),
+    queue_depth=lambda: _queue_depth(),
+))
 
 
 def _check_csrf(request: Request) -> None:

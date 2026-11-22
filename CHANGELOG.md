@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **后端按域拆分第一刀（health 域）**：`/api/health`、`/api/health/live`、`/api/health/ready` 从 `main.py` 抽到 `web/backend/api/health.py`，依赖由组合根以 getter 注入；`main.py` 3325→2995 行。路由/响应/安全披露语义不变，既有健康与运维测试全绿。
+
 ### Fixed
 
 - **知识库上传在隔离区卷不可写时不再裸 500**：镜像内预创建并授权 `/var/lib/deepresearch/rag-quarantine`（named volume 首次初始化继承属主，根治新环境复发）；`stream_to_temp` 的 `OSError` 转为结构化 503 `rag_ingest_failed`，客户端只回固定文案、异常原文经 `safe_detail` 只进服务端日志（#324 口径）。取代旧 PR #121。
