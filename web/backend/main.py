@@ -26,7 +26,6 @@ from fastapi import BackgroundTasks, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
-    FileResponse,
     JSONResponse,
     RedirectResponse,
     Response,
@@ -63,6 +62,7 @@ from .api.rag_read import build_rag_read_router
 from .api.rag_write import build_rag_write_router
 from .api.runs_manage import StartResponse, build_runs_manage_router
 from .api.share_manage import build_share_manage_router
+from .api.share_public import build_share_public_router
 from .api.webauthn import build_webauthn_manage_router
 from .appeals import submit_appeal
 from .auth import (
@@ -929,6 +929,21 @@ app.include_router(build_share_manage_router(
     share_markdown=lambda rid: _share_markdown(rid),
     share_state=lambda row: _share_state(row),
     utcnow=lambda: datetime.now(UTC),
+))
+
+
+# 2026-11 后端按域拆分（第十七刀）：分享公开读取路由 + SPA 壳。
+app.include_router(build_share_public_router(
+    get_store=lambda: store,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    require_user=lambda req: _require_user(req),
+    client_key=lambda req: _client_key(req),
+    share_limiter=lambda: SHARE_LIMITER,
+    audit=lambda action, **kwargs: _audit(action, **kwargs),
+    share_enabled_or_404=lambda: _share_enabled_or_404(),
+    share_markdown=lambda rid: _share_markdown(rid),
+    enforce_output_policy=lambda rid: _enforce_output_policy(rid),
+    frontend_index=lambda: FRONTEND_DIST / "index.html",
 ))
 
 
@@ -2267,67 +2282,6 @@ def _share_state(row: dict) -> dict:
     }
 
 
-@app.get("/api/shares")
-def list_my_shares(request: Request) -> dict:
-    """当前用户的活跃分享列表（需求 26 集中管理页）。
-
-    注意：token 明文不可恢复（只存 hash）——管理页只提供状态与撤销；
-    重新生成请到对应报告/历史预览的「分享」入口。
-    """
-    _share_enabled_or_404()
-    user_id = _require_user(request)
-    if store is None:
-        raise http_error("persistence_unavailable", "分享需要任务库（DR_DATABASE_URL）")
-    rows = (_store_call(store.list_report_shares_for_user, user_id) if user_id
-            else _store_call(store.list_report_shares, active_only=True))
-    return {"shares": [{
-        "share_id": row["share_id"],
-        "run_id": row["run_id"],
-        "topic": row.get("topic"),
-        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
-        "permanent": row.get("expires_at") is None,
-        "expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None,
-        "last_accessed_at": (row["last_accessed_at"].isoformat()
-                             if row.get("last_accessed_at") else None),
-        "access_count": row.get("access_count", 0),
-    } for row in rows]}
-
-
-@app.get("/api/share/{token}")
-def get_shared_report(token: str, request: Request) -> Response:
-    """免登录只读分享：统一 404（不存在/撤销/过期/审核未过/无报告）；限流防枚举。"""
-    _share_enabled_or_404()
-    if not token or len(token) > 128:
-        raise http_error("share_not_found", "链接无效或已过期")
-    if not SHARE_LIMITER.allow(f"share:{_client_key(request)}"):
-        raise http_error("rate_limited", "请求过于频繁，稍后再试")
-    if store is None:
-        raise http_error("share_not_found", "链接无效或已过期")
-    row = _store_call(store.resolve_report_share, token_hash(token))
-    if row is None:
-        raise http_error("share_not_found", "链接无效或已过期")
-    try:
-        _enforce_output_policy(row["run_id"])
-    except Exception:  # noqa: BLE001 —— 审核未过一律并进统一 404
-        raise http_error("share_not_found", "链接无效或已过期") from None
-    markdown = _share_markdown(row["run_id"])
-    if markdown is None:
-        raise http_error("share_not_found", "链接无效或已过期")
-    _store_call(store.touch_report_share, token_hash(token))
-    _audit("share_viewed", request=request, target_id=row["share_id"],
-           detail={"run_id": row["run_id"]})
-    return JSONResponse(
-        {"topic": row.get("topic") or "研究报告", "markdown": markdown,
-         "permanent": row.get("expires_at") is None,
-         "expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None},
-        headers={
-            "Cache-Control": "private, no-store",
-            "X-Robots-Tag": "noindex, nofollow, noarchive",
-            "Referrer-Policy": "no-referrer",
-        },
-    )
-
-
 #: #337：每用户并发 SSE 连接上限（每条连接占一个默认 executor 线程，默认 2）。
 MAX_SSE_PER_USER = max(1, int(_env_number("DR_MAX_SSE_PER_USER", 2)))
 _sse_active: dict[str, int] = {}
@@ -2518,21 +2472,6 @@ async def _shutdown_notifier() -> None:
         notifier.close()
 
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
-
-
-@app.get("/s/{token}")
-def share_page_shell(token: str) -> Response:
-    """SPA 分享页壳（需求 26）：只回 index.html；数据走 /api/share/{token}（统一 404）。
-
-    #337：壳页也必须带 noindex —— 爬虫只取 HTML，看不到 `/api/share` 的响应头；
-    否则分享 URL（bearer capability）可能被搜索引擎收录。robots.txt 另有 `/s/` 禁令。
-    """
-    index = FRONTEND_DIST / "index.html"
-    if not index.is_file():
-        raise http_error("share_not_found", "链接无效或已过期")
-    return FileResponse(index, headers={
-        "X-Robots-Tag": "noindex, nofollow, noarchive",
-    })
 
 
 # 需求 37 M2：对外 MCP Server（默认关；开启时挂载 /mcp 并把会话管理器接入 lifespan）
