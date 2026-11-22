@@ -60,6 +60,7 @@ from .api.meta import router as meta_router
 from .api.mfa import build_mfa_router
 from .api.ops import build_ops_router
 from .api.rag_read import build_rag_read_router
+from .api.rag_write import build_rag_write_router
 from .api.runs_manage import StartResponse, build_runs_manage_router
 from .api.webauthn import build_webauthn_manage_router
 from .appeals import submit_appeal
@@ -882,6 +883,17 @@ app.include_router(build_rag_read_router(
     format_dt=lambda value: _iso(value),
     failed_detail=lambda: _RAG_FAILED_DETAIL,
     total_quota_mb=lambda: RAG_TOTAL_MB,
+))
+
+
+# 2026-11 后端按域拆分（第十三刀）：知识库写路由 docs 元数据/rechunk/reembed。
+app.include_router(build_rag_write_router(
+    get_store=lambda: store,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    owned_doc=lambda req, doc_id: _rag_owned_doc(req, doc_id),
+    audit=lambda action, **kwargs: _audit(action, **kwargs),
+    client_key=lambda req: _client_key(req),
+    upload_limiter=lambda: RAG_UPLOAD_LIMITER,
 ))
 
 
@@ -1919,16 +1931,6 @@ def rag_delete_doc(request: Request, doc_id: str = Query(..., max_length=128)) -
     return {"ok": True, "doc_id": doc_id}
 
 
-class RagDocMetaRequest(BaseModel):
-    doc_id: str = Field(..., max_length=128)
-    display_name: Optional[str] = Field(None, max_length=120)
-    tags: Optional[list[str]] = Field(None, max_length=20)
-
-
-class RagRebuildRequest(BaseModel):
-    doc_id: str = Field(..., max_length=128)
-
-
 def _rag_owned_doc(request: Request, doc_id: str) -> tuple[Optional[str], dict]:
     """需求 23 写操作前置：任务库 + 归属（非本人 404）+ CSRF + 台账行。"""
     if store is None:
@@ -1939,61 +1941,6 @@ def _rag_owned_doc(request: Request, doc_id: str) -> tuple[Optional[str], dict]:
     if row is None:
         raise http_error("ingestion_not_found", f"文档不存在：{doc_id}")
     return user_id, row
-
-
-@app.patch("/api/rag/docs")
-def rag_update_doc(req: RagDocMetaRequest, request: Request) -> dict:
-    """重命名 / 标签（需求 23）；`display_name` 为空字符串非法（不传字段 = 不变）。"""
-    user_id, _ = _rag_owned_doc(request, req.doc_id)
-    display_name = req.display_name.strip() if req.display_name is not None else None
-    if display_name == "":
-        raise http_error("invalid_request", "display_name 不能为空字符串")
-    tags: Optional[list[str]] = None
-    if req.tags is not None:
-        cleaned = [tag.strip() for tag in req.tags if tag.strip()]
-        if any(len(tag) > 32 for tag in cleaned):
-            raise http_error("invalid_request", "单个标签不超过 32 字")
-        tags = cleaned
-    ok = _store_call(store.update_rag_doc_meta, req.doc_id, user_id,
-                     display_name=display_name, tags=tags)
-    if not ok:
-        raise http_error("ingestion_not_found", f"文档不存在：{req.doc_id}")
-    _audit("rag_doc_updated", request=request, actor_user_id=user_id,
-           target_type="rag_doc", target_id=req.doc_id,
-           detail={"has_display_name": display_name is not None,
-                   "tag_count": len(tags) if tags is not None else None})
-    return {"ok": True, "doc_id": req.doc_id}
-
-
-def _rag_requeue(request: Request, doc_id: str, task: str) -> dict:
-    """重建类操作共用：状态校验 + 快照前置 + 入队（复用租约/重试机制）。"""
-    user_id, row = _rag_owned_doc(request, doc_id)
-    if not RAG_UPLOAD_LIMITER.allow(f"rag-rebuild:{user_id or _client_key(request)}"):
-        raise http_error("rate_limited", "操作过于频繁，稍后再试")
-    if row["status"] != "ready":
-        raise http_error("rag_not_ready", "文档当前状态不允许重建（处理中或已失败）",
-                         detail=f"status={row['status']}")
-    if task == "rechunk" and _store_call(store.count_parse_snapshot, doc_id) == 0:
-        raise http_error("rag_no_snapshot",
-                         "该文档没有解析快照（历史文档），请重新上传后再操作")
-    if not _store_call(store.requeue_ingestion_for_task, row["ingestion_id"], task):
-        raise http_error("rag_not_ready", "文档当前状态不允许重建",
-                         detail=f"status={row['status']}")
-    _audit(f"rag_{task}_requested", request=request, actor_user_id=user_id,
-           target_type="rag_doc", target_id=doc_id, detail={"task": task})
-    return {"ok": True, "doc_id": doc_id, "ingestion_id": row["ingestion_id"], "task": task}
-
-
-@app.post("/api/rag/docs/rechunk")
-def rag_rechunk(req: RagRebuildRequest, request: Request) -> dict:
-    """重新分块（需求 23）：解析快照 → 分块 v2 → 新版本切换（无不可检索窗口）。"""
-    return _rag_requeue(request, req.doc_id, "rechunk")
-
-
-@app.post("/api/rag/docs/reembed")
-def rag_reembed(req: RagRebuildRequest, request: Request) -> dict:
-    """重新嵌入（需求 23）：同分块换向量 → 新版本切换。"""
-    return _rag_requeue(request, req.doc_id, "reembed")
 
 
 @app.post("/api/research/{run_id}/cancel")
