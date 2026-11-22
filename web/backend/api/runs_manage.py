@@ -28,6 +28,7 @@ def build_runs_manage_router(
     check_csrf: Callable[[Request], None],
     audit: Callable[..., None],
     run_brief: Callable[[dict], dict],
+    open_statuses: Callable[[], Any],
 ) -> APIRouter:
     """构造任务管理路由；依赖全部由组合根注入。"""
     router = APIRouter()
@@ -79,5 +80,59 @@ def build_runs_manage_router(
               target_id=run_id,
               detail={"old_topic": row["topic"][:200], "new_topic": topic[:200]})
         return {"ok": True, "run_id": run_id, "topic": topic}
+
+
+    def _owned_row(request: Request, run_id: str) -> tuple[Any, dict]:
+        store = get_store()
+        if store is None:
+            raise http_error("persistence_unavailable", "未配置任务库（DR_DATABASE_URL）")
+        owner = authorize_run(request, run_id)
+        check_csrf(request)
+        row = store_call(store.get_run, run_id)
+        if row is None:
+            raise http_error("run_id_not_found", f"run_id 不存在：{run_id}")
+        return owner, row
+
+    @router.post("/api/runs/{run_id}/pin")
+    def pin_run(run_id: str, request: Request) -> dict:
+        """需求 22：置顶（幂等）。"""
+        owner, _ = _owned_row(request, run_id)
+        store_call(get_store().set_pinned, run_id, True, user_id=owner)
+        audit("run_pinned", request=request, actor_user_id=owner,
+              target_type="run", target_id=run_id)
+        return {"ok": True, "run_id": run_id, "pinned": True}
+
+    @router.post("/api/runs/{run_id}/unpin")
+    def unpin_run(run_id: str, request: Request) -> dict:
+        """需求 22：取消置顶（幂等）。"""
+        owner, _ = _owned_row(request, run_id)
+        store_call(get_store().set_pinned, run_id, False, user_id=owner)
+        audit("run_unpinned", request=request, actor_user_id=owner,
+              target_type="run", target_id=run_id)
+        return {"ok": True, "run_id": run_id, "pinned": False}
+
+    @router.post("/api/runs/{run_id}/archive")
+    def archive_run(run_id: str, request: Request) -> dict:
+        """需求 22：软归档（仅影响默认列表可见性；进行中任务 409）。
+
+        需求 36：等待人类输入（AWAITING_*）也算「进行中」，不得归档。
+        """
+        owner, row = _owned_row(request, run_id)
+        if row["status"] in open_statuses():
+            raise http_error("run_active", "进行中的任务不能归档。",
+                             detail=f"status={row['status']}")
+        store_call(get_store().set_archived, run_id, True, user_id=owner)
+        audit("run_archived", request=request, actor_user_id=owner,
+              target_type="run", target_id=run_id)
+        return {"ok": True, "run_id": run_id, "archived": True}
+
+    @router.post("/api/runs/{run_id}/unarchive")
+    def unarchive_run(run_id: str, request: Request) -> dict:
+        """需求 22：取消归档（幂等）。"""
+        owner, _ = _owned_row(request, run_id)
+        store_call(get_store().set_archived, run_id, False, user_id=owner)
+        audit("run_unarchived", request=request, actor_user_id=owner,
+              target_type="run", target_id=run_id)
+        return {"ok": True, "run_id": run_id, "archived": False}
 
     return router
