@@ -7,7 +7,7 @@
 
 ### Changed
 
-- **后端按域拆分第一刀（health 域）**：`/api/health`、`/api/health/live`、`/api/health/ready` 从 `main.py` 抽到 `web/backend/api/health.py`，依赖由组合根以 getter 注入；`main.py` 3325→2995 行。路由/响应/安全披露语义不变，既有健康与运维测试全绿。
+- **后端按域拆分第一刀（health 域）**：`/api/health`、`/api/health/live`、`/api/health/ready` 从 `main.py` 抽到 `web/backend/api/health.py`，依赖由组合根以 getter 注入；`main.py` 3861→3753 行（-108），新增 `api/health.py` 159 行。路由/响应/安全披露语义不变，既有健康与运维测试全绿。
 
 ### Fixed
 
