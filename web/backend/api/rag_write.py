@@ -29,7 +29,8 @@ def build_rag_write_router(
     *,
     get_store: Callable[[], Any],
     store_call: Callable[..., Any],
-    owned_doc: Callable[[Request, str], tuple[Optional[str], dict]],
+    require_user: Callable[[Request], Optional[str]],
+    check_csrf: Callable[[Request], None],
     audit: Callable[..., None],
     client_key: Callable[[Request], str],
     upload_limiter: Callable[[], Any],
@@ -37,10 +38,22 @@ def build_rag_write_router(
     """构造知识库写路由；依赖全部由组合根注入。"""
     router = APIRouter()
 
+
+    def _owned_doc(request: Request, doc_id: str) -> tuple[Optional[str], dict]:
+        """需求 23 写操作前置：任务库 + 归属（非本人 404）+ CSRF + 台账行。"""
+        store = get_store()
+        if store is None:
+            raise http_error("persistence_unavailable", "知识库管理需要任务库（DR_DATABASE_URL）")
+        user_id = require_user(request)
+        check_csrf(request)
+        row = store_call(store.get_rag_doc_for_user, doc_id, user_id)
+        if row is None:
+            raise http_error("ingestion_not_found", f"文档不存在：{doc_id}")
+        return user_id, row
     @router.patch("/api/rag/docs")
     def rag_update_doc(req: RagDocMetaRequest, request: Request) -> dict:
         """重命名 / 标签（需求 23）；`display_name` 为空字符串非法（不传字段 = 不变）。"""
-        user_id, _ = owned_doc(request, req.doc_id)
+        user_id, _ = _owned_doc(request, req.doc_id)
         display_name = req.display_name.strip() if req.display_name is not None else None
         if display_name == "":
             raise http_error("invalid_request", "display_name 不能为空字符串")
@@ -63,7 +76,7 @@ def build_rag_write_router(
 
     def _requeue(request: Request, doc_id: str, task: str) -> dict:
         """重建类操作共用：状态校验 + 快照前置 + 入队（复用租约/重试机制）。"""
-        user_id, row = owned_doc(request, doc_id)
+        user_id, row = _owned_doc(request, doc_id)
         if not upload_limiter().allow(f"rag-rebuild:{user_id or client_key(request)}"):
             raise http_error("rate_limited", "操作过于频繁，稍后再试")
         store = get_store()
