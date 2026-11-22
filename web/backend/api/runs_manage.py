@@ -177,6 +177,8 @@ def build_runs_manage_router(
         payload = row.get("request") or {}
         profile_name = (payload.get("profile") or {}).get("name") or DEFAULT_PROFILE
         profile = resolve_profile(profile_name) or resolve_profile(DEFAULT_PROFILE)
+        if profile is None:
+            raise http_error("unknown_profile", "档位配置不可用")
         topic = row["topic"]
         instructions = payload.get("instructions") or ""
         idempotency_key = f"retry-{run_id}"
