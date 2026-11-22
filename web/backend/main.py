@@ -863,6 +863,7 @@ app.include_router(build_runs_manage_router(
     check_csrf=lambda req: _check_csrf(req),
     audit=lambda action, **kwargs: _audit(action, **kwargs),
     run_brief=lambda row: _run_brief(row),
+    open_statuses=lambda: OPEN_STATUSES,
 ))
 
 
@@ -1584,59 +1585,6 @@ def run_status(run_id: str, request: Request) -> dict:
 
 #: 需求 22：可重试的终态（失败 / 失联 / 超时）；成功与取消不重试
 RETRYABLE_STATUSES = ("FAILED", "LOST", "TIMED_OUT")
-
-
-def _owned_run_row(request: Request, run_id: str) -> tuple[Optional[str], dict]:
-    """需求 22 写操作共用前置：任务库可用 + 归属校验（非本人 404）+ CSRF + 取行。"""
-    if store is None:
-        raise http_error("persistence_unavailable", "未配置任务库（DR_DATABASE_URL）")
-    owner = _authorize_run(request, run_id)
-    _check_csrf(request)
-    row = _store_call(store.get_run, run_id)
-    if row is None:
-        raise http_error("run_id_not_found", f"run_id 不存在：{run_id}")
-    return owner, row
-
-
-@app.post("/api/runs/{run_id}/pin")
-def pin_run(run_id: str, request: Request) -> dict:
-    """需求 22：置顶（幂等）。"""
-    owner, _ = _owned_run_row(request, run_id)
-    _store_call(store.set_pinned, run_id, True, user_id=owner)
-    _audit("run_pinned", request=request, actor_user_id=owner, target_type="run", target_id=run_id)
-    return {"ok": True, "run_id": run_id, "pinned": True}
-
-
-@app.post("/api/runs/{run_id}/unpin")
-def unpin_run(run_id: str, request: Request) -> dict:
-    """需求 22：取消置顶（幂等）。"""
-    owner, _ = _owned_run_row(request, run_id)
-    _store_call(store.set_pinned, run_id, False, user_id=owner)
-    _audit("run_unpinned", request=request, actor_user_id=owner, target_type="run", target_id=run_id)
-    return {"ok": True, "run_id": run_id, "pinned": False}
-
-
-@app.post("/api/runs/{run_id}/archive")
-def archive_run(run_id: str, request: Request) -> dict:
-    """需求 22：软归档（仅影响默认列表可见性；进行中任务 409）。
-
-    需求 36：等待人类输入（AWAITING_*）也算「进行中」，不得归档。
-    """
-    owner, row = _owned_run_row(request, run_id)
-    if row["status"] in OPEN_STATUSES:
-        raise http_error("run_active", "进行中的任务不能归档", detail=f"status={row['status']}")
-    _store_call(store.set_archived, run_id, True, user_id=owner)
-    _audit("run_archived", request=request, actor_user_id=owner, target_type="run", target_id=run_id)
-    return {"ok": True, "run_id": run_id, "archived": True}
-
-
-@app.post("/api/runs/{run_id}/unarchive")
-def unarchive_run(run_id: str, request: Request) -> dict:
-    """需求 22：取消归档（幂等）。"""
-    owner, _ = _owned_run_row(request, run_id)
-    _store_call(store.set_archived, run_id, False, user_id=owner)
-    _audit("run_unarchived", request=request, actor_user_id=owner, target_type="run", target_id=run_id)
-    return {"ok": True, "run_id": run_id, "archived": False}
 
 
 @app.post("/api/runs/{run_id}/retry", response_model=StartResponse)
