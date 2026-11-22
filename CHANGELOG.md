@@ -7,6 +7,7 @@
 
 ### Changed
 
+- **后端按域拆分第十五刀（rag 上传域收官）**：`POST /api/rag/ingest`（流式落盘 + 三重校验 + 异步登记/本地同步摄取）迁入 `web/backend/api/rag_ingest.py`（160 行），`main.py` 2718→2608 行；隔离区路径/限流/鉴权注入，`stream_to_temp` 以可注入 callable 保留测试 monkeypatch 语义；rag 上传/孤儿清理/失败关闭测试全绿。rag 域全部路由收官。
 - **后端按域拆分第十四刀（rag 管理域）**：`GET /api/rag/ingestions/{id}`、`DELETE /api/rag/docs` 迁入 `web/backend/api/rag_admin.py`（102 行），`main.py` 2788→2718 行；删除「验证归零」、隔离区清理、鉴权开关与失败文案以注入方式保持。顺带把 `rag_write` 的归属前置内聚到其模块（`_owned_doc`），删除已无引用的 main helper。rag API/管理测试全绿。
 - **后端按域拆分第十三刀（rag 写域）**：`PATCH /api/rag/docs`、`POST /api/rag/docs/rechunk`、`POST /api/rag/docs/reembed` 与重建前置迁入 `web/backend/api/rag_write.py`（94 行），`main.py` 2841→2788 行；归属前置/限流/审计/状态校验以注入方式保持，rag API/管理测试全绿。
 - **后端按域拆分第十二刀（rag 只读域）**：`GET /api/rag/docs`、`GET /api/rag/docs/{doc_id}/chunks`、`GET /api/rag/usage` 与 Qdrant 回落聚合迁入 `web/backend/api/rag_read.py`（119 行），`main.py` 2920→2841 行；PG 台账/读侧口径/失败文案以注入方式保持，rag API/管理测试全绿；本刀起本地验证同时跑 mypy CI 目标。

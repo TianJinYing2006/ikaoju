@@ -13,9 +13,7 @@ import json
 import logging
 import os
 import secrets
-import shutil
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -24,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from fastapi import BackgroundTasks, FastAPI, File, Header, Query, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
@@ -60,6 +58,7 @@ from .api.meta import router as meta_router
 from .api.mfa import build_mfa_router
 from .api.ops import build_ops_router
 from .api.rag_admin import build_rag_admin_router
+from .api.rag_ingest import build_rag_ingest_router
 from .api.rag_read import build_rag_read_router
 from .api.rag_write import build_rag_write_router
 from .api.runs_manage import StartResponse, build_runs_manage_router
@@ -126,14 +125,7 @@ from .security_headers import (
     merge_connect_src,
 )
 from .store import ACTIVE_STATUSES, QuotaExceeded, RunStore
-from .upload_guard import (
-    ALLOWED_EXT,
-    UploadRejected,
-    detect_and_validate,
-    extension_of,
-    sanitize_filename,
-    stream_to_temp,
-)
+from .upload_guard import stream_to_temp
 from .usage import make_store_sink
 
 logger = logging.getLogger(__name__)
@@ -908,6 +900,19 @@ app.include_router(build_rag_admin_router(
     format_dt=lambda value: _iso(value),
     failed_detail=lambda: _RAG_FAILED_DETAIL,
     auth_required=lambda: AUTH_REQUIRED,
+))
+
+
+# 2026-11 后端按域拆分（第十五刀）：知识库上传路由 ingest。
+app.include_router(build_rag_ingest_router(
+    get_store=lambda: store,
+    store_call=lambda fn, *args, **kwargs: _store_call(fn, *args, **kwargs),
+    require_user=lambda req: _require_user(req),
+    check_csrf=lambda req: _check_csrf(req),
+    client_key=lambda req: _client_key(req),
+    upload_limiter=lambda: RAG_UPLOAD_LIMITER,
+    max_upload_mb=lambda: RAG_MAX_UPLOAD_MB,
+    stream_to_temp_fn=lambda *args, **kwargs: stream_to_temp(*args, **kwargs),
 ))
 
 
@@ -1753,121 +1758,6 @@ app.include_router(meta_router)
 
 
 # ------------------------------------------------------------------ RAG 知识库（P6-A）
-
-@app.post("/api/rag/ingest")
-async def rag_ingest(request: Request, file: UploadFile = File(...)) -> Response:
-    """上传并摄取文档（P6-A / P0-8a / P0-8b）：流式落盘 + 三重校验 + 异步管线。
-
-    - 有任务库（staging/生产）：写入隔离区 + 登记 `rag_ingestions` ⇒ **202**，
-      由 Worker 异步解析 / embedding / 写 Qdrant；`GET /api/rag/ingestions/{id}` 查状态；
-      相同内容（内容寻址 doc_id）重复上传命中既有记录，不重复处理。
-    - 无任务库（本地零依赖）：退化为同步摄取 ⇒ **200**（行为与 P6-A 一致）。
-    - 三重校验与解析限额同 P0-8a；隔离区目录由 `DR_RAG_QUARANTINE_DIR` 配置。
-    """
-    user_id = _require_user(request)
-    _check_csrf(request)
-    if not RAG_UPLOAD_LIMITER.allow(f"rag:{user_id or _client_key(request)}"):
-        raise http_error("rate_limited", "上传过于频繁，稍后再试")
-
-    filename = sanitize_filename(file.filename)
-    extension = extension_of(filename)
-    if extension not in ALLOWED_EXT:
-        raise http_error(
-            "unsupported_file_type", "不支持的文件类型",
-            detail=f"allowed={sorted(ALLOWED_EXT)}",
-        )
-
-    max_bytes = int(RAG_MAX_UPLOAD_MB * 1024 * 1024)
-    if store is not None:
-        from .ingestion import quarantine_dir
-
-        stored_name = f"{uuid.uuid4().hex}{extension}"
-        path = os.path.join(quarantine_dir(), stored_name)
-    else:
-        stored_name = ""
-        tmp_dir = tempfile.mkdtemp(prefix="dr-rag-")
-        path = os.path.join(tmp_dir, f"{uuid.uuid4().hex}{extension}")
-
-    #: #325：只有真正登记成功（202/200）后隔离区文件才交给 worker，不得删；
-    #: 写盘后的任何拒绝路径（400/413/500）都必须清掉，否则留下无 DB 记录的孤儿文件。
-    registered = False
-    try:
-        try:
-            size, digest, head = await stream_to_temp(file, path, max_bytes)
-        except UploadRejected as exc:
-            raise http_error(exc.code, exc.message, detail=exc.detail) from exc
-        except OSError as exc:
-            # 2026-11：隔离区卷不可写 / 目录缺失（如 named volume 属主错误）⇒ 结构化 503，
-            # 不裸露 500。客户端只回固定文案；异常类型与原文经 safe_detail 进服务端日志（#324）。
-            raise http_error(
-                "rag_ingest_failed",
-                safe_detail("上传暂存失败（服务端存储不可写）", exc),
-            ) from exc
-        if size == 0:
-            raise http_error("invalid_request", "文件为空")
-        try:
-            detect_and_validate(path, filename, head)
-        except UploadRejected as exc:
-            raise http_error(exc.code, exc.message, detail=exc.detail) from exc
-
-        doc_id = f"{user_id or 'local'}:{digest[:16]}"
-        if store is not None:
-            # P0-8b / P0-11：登记后由 Worker 异步处理。去重走**数据库唯一索引**
-            # （`ON CONFLICT ... DO NOTHING`，见 store.create_ingestion + 0017）：
-            # 并发上传不可能重复插入，冲突方回查既有记录并删除自己的隔离区文件。
-            ingestion_id = uuid.uuid4().hex[:12]
-            try:
-                created = store.create_ingestion(
-                    ingestion_id, doc_id, user_id=user_id, source=filename,
-                    sha256=digest, size_bytes=size, stored_name=stored_name)
-            except Exception as exc:  # noqa: BLE001
-                os.remove(path)
-                raise http_error(
-                    "persistence_unavailable",
-                    safe_detail("摄取登记失败", exc),
-                ) from exc
-            if created is None:
-                existing = _store_call(store.find_ingestion_by_doc, user_id, doc_id)
-                os.remove(path)
-                registered = True  # 去重命中：本文件已删，别让 finally 重复处理
-                if existing is None:
-                    raise http_error("persistence_unavailable", "摄取登记冲突，请重试")
-                return JSONResponse(status_code=202, content={
-                    "ingestion_id": existing["ingestion_id"], "doc_id": doc_id,
-                    "source": existing["source"], "status": existing["status"],
-                })
-            registered = True
-            return JSONResponse(status_code=202, content={
-                "ingestion_id": ingestion_id, "doc_id": doc_id,
-                "source": filename, "status": "pending",
-            })
-
-        # 本地零依赖：同步摄取（P6-A 行为）
-        from research_engine.rag.ingest import DocumentIngester, IngestLimitExceeded
-
-        def _run_ingest() -> int:
-            return DocumentIngester().ingest_file(path, doc_id=doc_id, user_id=user_id)
-
-        try:
-            chunks = await asyncio.get_running_loop().run_in_executor(None, _run_ingest)
-        except IngestLimitExceeded as exc:
-            raise http_error("document_limit_exceeded", str(exc)[:200]) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise http_error(
-                "rag_ingest_failed",
-                safe_detail("文档摄取失败", exc),
-            ) from exc
-        if not chunks:
-            raise http_error("rag_ingest_failed", "文档未解析出任何内容")
-        return JSONResponse(status_code=200, content={
-            "doc_id": doc_id, "source": filename, "chunks": chunks,
-        })
-    finally:
-        if store is None:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        elif not registered and os.path.exists(path):
-            os.remove(path)  # #325：拒绝路径不留在隔离区（无 DB 记录 = 永久孤儿）
-
 
 #: #324：摄取失败对用户只回固定文案；`last_error` 里的异常类别/原文只留在服务端（日志 + DB）。
 _RAG_FAILED_DETAIL = "文档处理失败"
