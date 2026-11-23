@@ -299,7 +299,6 @@ class LLMClient:
             # 2026-11：显式 run_id ⇒ 优先走注册表 sink（无注册时自动回退 contextvar）
         ), run_id=getattr(state, "run_id", "") if state is not None else "")
 
-    @staticmethod
     def chat_json(
         self,
         messages: List[Dict[str, str]],
