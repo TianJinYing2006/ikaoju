@@ -81,6 +81,13 @@ def _client_with(monkeypatch, outcomes) -> tuple[LLMClient, _FakeClient]:
     return LLMClient(model="qwen-flash", role="test"), fake
 
 
+def test_regression_chat_json_recovers_from_invalid_response(monkeypatch):
+    """Structured output from an instance must parse and retry without a live SDK."""
+    client, _ = _client_with(monkeypatch, [_ok("not JSON"), _ok('{"answer": 42}')])
+    messages = [{"role": "user", "content": "Return the answer as JSON."}]
+    assert client.chat_json(messages, retries=1) == {"answer": 42}
+
+
 def test_retries_429_and_then_succeeds(deadline_60, no_sleep, monkeypatch):
     client, fake = _client_with(monkeypatch, [_RetryableError("limit_requests"), _ok("hello")])
     assert client.chat([{"role": "user", "content": "x"}]) == "hello"
